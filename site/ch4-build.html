@@ -439,6 +439,7 @@ exit</code></pre>
 
   <h4>第四步:把内核模块装进 rootfs</h4>
 <pre><code><span class="c"># 4.3 节装出来的模块树,整棵拷进 rootfs(注意 lib/modules/$KVER 层级!)</span>
+<span class="c"># 前提:与上面导出 KVER 的步骤在同一 shell;换了终端要先重跑导出,否则 $KVER 为空</span>
 sudo mkdir -p rootfs/lib/modules
 sudo cp -a $HOME/zynq-mainline/build/modules/lib/modules/$KVER rootfs/lib/modules/
 <span class="c"># 删掉两个指向"编译机内核源码树"的软链接,板上根本不存在,留着硌脚</span>

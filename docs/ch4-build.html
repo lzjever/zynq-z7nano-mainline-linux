@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>第 4 章 · 构建三件套 — Zynq Z7-Nano 主线 Linux 实战手册</title>
+<meta name="description" content="主线 U-Boot、Linux 内核与 Debian rootfs 交叉构建:同源设备树、multi_v7 验证、debootstrap 两阶段,零 Vivado。">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
@@ -31,7 +32,7 @@
   <h2 class="title">构建三件套:U-Boot、内核、Debian rootfs</h2>
   <p class="subtitle">三条流水线,一台普通 x86 Ubuntu 24.04,零 Vivado——每一条命令都可以直接复制执行。</p>
 
-  <p>第 2 章讲过启动链是 BootROM → FSBL → U-Boot → 内核 → 用户态。其中 FSBL 我们直接复用厂商现成的——它的灵魂 ps7_init 携带每块板不同的板级参数(第 2 章),自己重编收益有限。剩下三环,就在本章亲手造出来:</p>
+  <p>第 2 章讲过启动链是 BootROM → FSBL → U-Boot → 内核 → 用户态。其中 FSBL 我们直接复用厂商现成的——它的灵魂 ps7_init 携带每块板不同的板级参数(<a href="ch2-bootchain.html">第 2 章</a>),自己重编收益有限。剩下三环,就在本章亲手造出来:</p>
   <div class="flow">
     <div class="node"><b>4.2 U-Boot</b>(主线源码 + 我们的设备树)→ u-boot-dtb.bin</div>
     <div class="arrow">↓</div>
@@ -39,7 +40,7 @@
     <div class="arrow">↓</div>
     <div class="node"><b>4.4 Debian rootfs</b>(debootstrap + qemu 伪装)→ 一整棵 Debian 13</div>
     <div class="arrow">↓</div>
-    <div class="node">三路产物在 <b>第 5 章</b>汇合:装进一张 SD 卡,首次启动</div>
+    <div class="node">三路产物在 <a href="ch5-sdcard.html"><b>第 5 章</b></a>汇合:装进一张 SD 卡,首次启动</div>
   </div>
   <p>三条流水线彼此独立,顺序无所谓;设备树(4.2、4.3 各一棵)是唯一贯穿的线索,也是每块板真正的"板级支持包"。</p>
 
@@ -48,7 +49,7 @@
 <pre><code><span class="c"># 工作台目录约定(全手册沿用;尽量写绝对路径,sudo 下 ~ 会展开成 /root)</span>
 mkdir -p ~/zynq-mainline/{src,build,rootfs,sd,vendor}
 cd ~/zynq-mainline/src</code></pre>
-  <p>本章全程需要联网:克隆源码、apt 装包、debootstrap 下载 Debian,都在线进行。然后一条 <code>apt</code> 把所有依赖装齐——这是"本项目不需要 Vivado"的第一份证据:</p>
+  <p>本章全程需要联网——克隆源码、apt 装包、debootstrap 下载 Debian,一个都少不了。然后一条 <code>apt</code> 把所有依赖装齐,这是"本项目不需要 Vivado"的第一份证据:</p>
 <pre><code>sudo apt install gcc-arm-linux-gnueabihf device-tree-compiler bison flex bc \
   libssl-dev libgnutls28-dev swig python3-dev libncurses-dev u-boot-tools \
   debootstrap qemu-user-static libelf-dev p7zip-full openocd python3-serial</code></pre>
@@ -64,7 +65,7 @@ cd ~/zynq-mainline/src</code></pre>
     <tr><td><code>swig python3-dev libncurses-dev u-boot-tools</code></td><td>U-Boot 构建依赖与 mkimage 等工具</td></tr>
     <tr><td><code>debootstrap</code> + <code>qemu-user-static</code></td><td>制造 ARM rootfs 的两件套(4.4 节主角)</td></tr>
     <tr><td><code>p7zip-full</code></td><td>解厂商资料包——里面藏着 <code>zynq_fsbl.elf</code> 和硬件描述文件</td></tr>
-    <tr><td><code>openocd</code> + <code>python3-serial</code></td><td>JTAG 调试与串口工具(第 3、6 章)</td></tr>
+    <tr><td><code>openocd</code> + <code>python3-serial</code></td><td>JTAG 调试与串口工具(<a href="ch3-toolchain.html">第 3 章</a>、<a href="ch6-debug.html">第 6 章</a>)</td></tr>
   </table>
   <h3>4.2 U-Boot:主线源码 + 一份设备树</h3>
   <h4>第一步:克隆主线源码</h4>
@@ -149,7 +150,7 @@ git clone --depth 1 https://github.com/u-boot/u-boot.git   <span class="c"># 浅
 chosen {
 	stdout-path = "serial0:115200n8";   <span class="c">/* 115200 8N1 */</span>
 };</code></pre>
-  <p>指错串口的症状很有迷惑性:U-Boot 明明在跑(第 6 章 JTAG 能看到 PC 在动),串口却一个字都不出。</p>
+  <p>指错串口的症状很有迷惑性:U-Boot 明明在跑(<a href="ch6-debug.html">第 6 章</a> JTAG 能看到 PC 在动),串口却一个字都不出。</p>
   <p><strong>差异二:内存 512MB。</strong>内存大小每块板不一样,必须照实配写——Z7-Nano 贴的是 512MB DDR3:</p>
 <pre><code>memory@0 {
 	device_type = "memory";
@@ -197,7 +198,7 @@ make O=$HOME/zynq-mainline/build/uboot CROSS_COMPILE=arm-linux-gnueabihf- xilinx
 <span class="c"># 2) 编译;DEVICE_TREE= 指定我们的板子(不指定就编默认板!)</span>
 make O=$HOME/zynq-mainline/build/uboot CROSS_COMPILE=arm-linux-gnueabihf- \
      DEVICE_TREE=zynq-z7-nano -j24</code></pre>
-  <p><code>-j24</code> 按你的 CPU 核数改。注意 <code>DEVICE_TREE=</code> 只加在第二条 make 上——defconfig 那步不需要,编译那步绝不能忘。</p>
+  <p><code>-j24</code> 按你的 CPU 核数改(整轮编译以 24 核机器为参考约 2-3 分钟,核数少的机器按比例放慢)。注意 <code>DEVICE_TREE=</code> 只加在第二条 make 上——defconfig 那步不需要,编译那步绝不能忘。</p>
   <div class="box box-know">
     <div class="box-title">make O= 是什么意思?</div>
     <p><code>O=目录</code> 把编译产物全部导到指定目录,源码树保持干净(out-of-tree build)。好处有三:换一个目标(比如同时编内核和 U-Boot)互不污染;删掉重编只需 <code>rm -rf</code> 一个目录;源码树随时可以 <code>git clean</code>。本章 U-Boot 用了 O=;内核为简单起见就地编译(in-tree),产物散在源码树里,同样能跑。</p>
@@ -214,8 +215,8 @@ make O=$HOME/zynq-mainline/build/uboot CROSS_COMPILE=arm-linux-gnueabihf- \
     <tr><td><code>u-boot</code></td><td>带符号的 ELF——第 6 章 JTAG 调试加载用</td></tr>
     <tr><td><code>u-boot.dtb</code></td><td>独立的设备树 blob,刚才 strings 验证的对象</td></tr>
   </table>
-  <p>还有一件事值得知道:这份配置默认 <code>BOOTCOMMAND="run distro_bootcmd"</code>、<code>BOOTDELAY=2</code>——U-Boot 启动后倒数 2 秒,自动去 SD 卡上找 <code>/extlinux/extlinux.conf</code> 之类的引导菜单。这正是第 5 章"换内核只需改文件、不用重编 U-Boot"的机制基础。</p>
-  <p>这一小节最常见的两个翻车现场,对号入座:</p>
+  <p>还有一件事值得知道:这份配置默认 <code>BOOTCOMMAND="run distro_bootcmd"</code>、<code>BOOTDELAY=2</code>——U-Boot 启动后倒数 2 秒,自动去 SD 卡上找 <code>/extlinux/extlinux.conf</code> 之类的引导菜单。这正是<a href="ch5-sdcard.html">第 5 章</a>"换内核只需改文件、不用重编 U-Boot"的机制基础。</p>
+  <p>这一小节最常见的几个翻车现场,对号入座:</p>
   <table>
     <tr><th>现象</th><th>原因</th></tr>
     <tr><td>strings 查出来是 zed/zybo 等别的板名</td><td><code>DEVICE_TREE=</code> 忘了加在第二条 make 上,编的是默认板</td></tr>
@@ -302,7 +303,7 @@ make O=$HOME/zynq-mainline/build/uboot CROSS_COMPILE=arm-linux-gnueabihf- \
 	usb-phy = &lt;&amp;usb_phy0&gt;;
 };
 </code></pre>
-  <p>与 U-Boot 版的差异只有两处:多了 <code>spi0 = &amp;qspi</code> 别名和 <code>&amp;qspi</code> 节点——这是给将来 QSPI 启动(第 8 章路线图)留的口子;头注释里还交代了一处"没带的差异":这块板没有 MIO 上的 GPIO LED,SD 活动灯由 mmc 驱动自己点亮,所以不需要 LED 节点。同样要在 <code>arch/arm/boot/dts/xilinx/Makefile</code> 里登记:</p>
+  <p>与 U-Boot 版的差异只有两处:多了 <code>spi0 = &amp;qspi</code> 别名和 <code>&amp;qspi</code> 节点——这是给将来 QSPI 启动(<a href="ch8-roadmap.html">第 8 章</a>路线图)留的口子;头注释里还交代了一处"没带的差异":这块板没有 MIO 上的 GPIO LED,SD 活动灯由 mmc 驱动自己点亮,所以不需要 LED 节点。同样要在 <code>arch/arm/boot/dts/xilinx/Makefile</code> 里登记:</p>
 <pre><code><span class="c"># arch/arm/boot/dts/xilinx/Makefile,zynq 系列附近</span>
 dtb-$(CONFIG_ARCH_ZYNQ) += zynq-z7-nano.dtb</code></pre>
 
@@ -322,14 +323,14 @@ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j24 zImage dtbs modules
 <span class="c"># 3) 模块安装到独立目录,稍后拷进 rootfs</span>
 make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
      INSTALL_MOD_PATH=$HOME/zynq-mainline/build/modules modules_install</code></pre>
-  <p>这一步的产物:<code>arch/arm/boot/zImage</code>(约 11.7MB)、<code>arch/arm/boot/dts/xilinx/zynq-z7-nano.dtb</code>,以及 899 个 <code>.ko</code> 模块共约 120MB。顺手把两个"上架"文件拷到第 5 章要用的 sd 目录:</p>
+  <p>这一步的产物(编译耗时以 24 核机器为参考约 15 分钟,核数少的机器按比例放慢):<code>arch/arm/boot/zImage</code>(约 11.7MB)、<code>arch/arm/boot/dts/xilinx/zynq-z7-nano.dtb</code>,以及 899 个 <code>.ko</code> 模块共约 120MB。顺手把两个"上架"文件拷到第 5 章要用的 sd 目录:</p>
 <pre><code>mkdir -p ~/zynq-mainline/sd/boot/extlinux
 cp arch/arm/boot/zImage ~/zynq-mainline/sd/boot/
 cp arch/arm/boot/dts/xilinx/zynq-z7-nano.dtb ~/zynq-mainline/sd/boot/</code></pre>
 
   <h4>第三步:modules_install 的两个真实的坑</h4>
   <div class="box box-warn">
-    <div class="box-title">模块安装的两个坑(defconfig 的坑在第 7 章坑 6 有详录;modules 竞态重跑一遍即愈)</div>
+    <div class="box-title">模块安装的两个坑(defconfig 的坑在<a href="ch7-pitfalls.html">第 7 章</a>坑 6 有详录;modules 竞态重跑一遍即愈)</div>
     <p><strong>坑一:偶发 cp 报错。</strong>大核数并行跑 <code>modules_install</code> 时偶发 cp 报错,这是安装脚本内部的竞态,<strong>重跑一遍即好</strong>,不影响产物正确性——别急着重装环境。</p>
     <p><strong>坑二:目录层级。</strong><code>INSTALL_MOD_PATH</code> 指向的是一个"根",make 会自动在其下创建 <code>lib/modules/&lt;内核版本&gt;/</code> 层级。板上模块必须恰好位于 <code>/lib/modules/$(uname -r)/</code>——少一层(直接躺在 /lib/modules 下)modprobe 就一个都找不到。装完检查:</p>
 <pre><code>ls $HOME/zynq-mainline/build/modules/lib/modules/
@@ -370,7 +371,7 @@ sudo chroot rootfs /debootstrap/debootstrap --second-stage</code></pre>
     <div class="box-title">两个小提醒</div>
     <p>目标目录必须不存在或为空——debootstrap 拒绝在非空目录里开工,重来一次之前先 <code>sudo rm -rf rootfs</code> 清场。另外第一阶段要下载整套基础包,镜像源选对了(例中清华 tuna)速度才有保障。</p>
   </div>
-  <p>第二阶段会刷很长一串输出,最后看到这行才算成功:</p>
+  <p>第二阶段会刷很长一串输出(以 24 核机器为参考约 20-40 分钟——qemu 逐条翻译 ARM 指令,这个耗时属于正常,不是出了问题),最后看到这行才算成功:</p>
 <pre><code>I: Base system installed successfully</code></pre>
   <p>至此 rootfs 是一个"能启动但几乎什么都没有"的 Debian——没有密码、没有 ssh、没有网络配置,接下来逐步补齐。</p>
 
@@ -485,7 +486,7 @@ sudo rm -f rootfs/usr/bin/qemu-arm-static</code></pre>
     </ol>
   </div>
 
-  <p>清单全绿,就可以带着三件套进入第 5 章的制卡与首启了。</p>
+  <p>清单全绿,就可以带着三件套进入<a href="ch5-sdcard.html">第 5 章</a>的制卡与首启了。</p>
 
   <div class="box box-win">
     <div class="box-title">本章小结</div>

@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>第 5 章 · 制卡与首次启动 — Zynq Z7-Nano 主线 Linux 实战手册</title>
+<meta name="description" content="SD 卡双分区制卡:模板复用生成 BOOT.BIN、extlinux.conf 与 make-sd.sh,三十秒首启时间线。">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
@@ -47,7 +48,7 @@
 │  extlinux/extlinux.conf     │                                      │
 └─────────────────────────────┴──────────────────────────────────────┘
 </code></pre>
-  <p>两个数字解释一下:</p>
+  <p>表里的关键数字解释一下:</p>
   <table>
     <tr><th>参数</th><th>值</th><th>为什么</th></tr>
     <tr><td>p1 起始扇区</td><td>8192(=4MB)</td><td>分区表本身占开头几十个扇区;8192 是传统的安全起点,让分区按 4MB 边界对齐,兼顾兼容性与读写性能</td></tr>
@@ -88,7 +89,7 @@
   </table>
 
   <h3>5.3 生成 BOOT.BIN:make-bootbin.py</h3>
-  <div class="box box-step"><div class="box-title">步骤 · 先备齐厂商物料</div><p>打包器需要一件输入:<strong>厂商原厂 BOOT.BIN</strong>(当模板)。来源(出厂 SD 卡;或厂商资料包"开箱测试 images"目录里通常有同款),另有一批补充物料建议一并备齐:</p>
+  <div class="box box-step"><div class="box-title">步骤 · 先备齐厂商物料</div><p>打包器需要一件输入:<strong>厂商原厂 BOOT.BIN</strong>(当模板),来源:出厂 SD 卡,或厂商资料包的"开箱测试 images"目录(通常有同款)。另有一批补充物料建议一并备齐:</p>
 <ol><li><strong>出厂 SD 卡</strong>:插到读卡器,拷出来,顺手做个全卡备份更保险:
 <pre><code>mkdir -p ~/zynq-mainline/vendor
 cp /media/$USER/*/BOOT.BIN ~/zynq-mainline/vendor/   <span class="c"># 挂载路径以实际为准</span>
@@ -96,7 +97,7 @@ cp /media/$USER/*/BOOT.BIN ~/zynq-mainline/vendor/   <span class="c"># 挂载路
 <span class="c"># sudo dd if=/dev/sdX of=~/factory-sd.img bs=4M status=progress</span></code></pre></li>
 <li><strong>补充物料</strong>(来源 1 拿不到、或第 6/8 章需要时):厂商资料包(向板卡厂商/客服索取;本项目为 Z7-NanoR20-7020-2018.3 系列)demo 压缩包里有现成的 zynq_fsbl.elf 与 hdf,解到 vendor/ 备用(注意 -o 后用 $HOME 而非 ~,波浪号在参数里不展开):
 <pre><code>7z e 厂商资料包.7z -o$HOME/zynq-mainline/vendor "*zynq_fsbl.elf" "*.hdf"</code></pre></li></ol></div>
-  <p>还记得第 2 章的 BOOT.BIN 布局吗?ROM 头 + 镜像头 + 分区头表 + FSBL 数据,后面才是 U-Boot 分区。我们的策略是<strong>模板复用法</strong>:拿厂商出厂 SD 卡里的 BOOT.BIN,截取前 0x19740 字节充当模板(ROM 头、镜像头、FSBL 分区连同里面的 ps7_init 板级参数,原封不动——FSBL 携带每板不同的硬件参数,能复用就不重编,道理见第 2 章),只把第二分区换成自己编的 u-boot-dtb.bin:</p>
+  <p>还记得<a href="ch2-bootchain.html">第 2 章</a>的 BOOT.BIN 布局吗?ROM 头 + 镜像头 + 分区头表 + FSBL 数据,后面才是 U-Boot 分区。我们的策略是<strong>模板复用法</strong>:拿厂商出厂 SD 卡里的 BOOT.BIN,截取前 0x19740 字节充当模板(ROM 头、镜像头、FSBL 分区连同里面的 ps7_init 板级参数,原封不动——FSBL 携带每板不同的硬件参数,能复用就不重编,道理见第 2 章),只把第二分区换成自己编的 u-boot-dtb.bin:</p>
 <pre><code>cd ~/zynq-mainline
 python3 手册仓库路径/code/make-bootbin.py \
     --template vendor/BOOT.BIN \
@@ -107,22 +108,22 @@ python3 手册仓库路径/code/make-bootbin.py \
   <table>
     <tr><th>参数</th><th>含义</th></tr>
     <tr><td><code>--template</code></td><td>厂商原厂 BOOT.BIN(出厂卡 FAT 分区里那份;厂商资料包里也有)——提供 ROM 头 + 能用的 FSBL</td></tr>
-    <tr><td><code>--uboot</code></td><td>我们第 4 章编的平铺二进制 u-boot-dtb.bin</td></tr>
+    <tr><td><code>--uboot</code></td><td>我们<a href="ch4-build.html">第 4 章</a>编的平铺二进制 u-boot-dtb.bin</td></tr>
     <tr><td><code>--text-base</code></td><td>U-Boot 的链接地址 0x04000000,必须与分区头的 dest_load/dest_exec 一致(默认值就是它)</td></tr>
     <tr><td><code>-o</code></td><td>输出文件,直接落到 sd/boot/ 里</td></tr>
   </table>
   <p>脚本跑完先做"自验证"——重读刚写出的分区头,断言 XOR 校验和与结束标记都正确,然后打印一行 OK(字节数取决于你的 U-Boot 大小):</p>
 <pre><code>OK: BOOT.BIN (1217352 字节)  p2=1113096B @0x19740  base=0x04000000</code></pre>
-  <p>看到 OK 就说明格式三要素(平铺 p2、XOR 校验和、15×0 + 0xFFFFFFFF 结束标记)都过关了。为什么这么讲究?第 2 章的血泪考古和第 7 章的 mkbootimage 失败案都是前车之鉴——BootROM 和 FSBL 对格式的挑剔程度远超文档描述,多一道断言多一分安心。</p>
+  <p>看到 OK 就说明格式三要素(平铺 p2、XOR 校验和、15×0 + 0xFFFFFFFF 结束标记)都过关了。为什么这么讲究?<a href="ch2-bootchain.html">第 2 章</a>的血泪考古和<a href="ch7-pitfalls.html">第 7 章</a>的 mkbootimage 失败案都是前车之鉴——BootROM 和 FSBL 对格式的挑剔程度远超文档描述,多一道断言多一分安心。</p>
   <div class="box box-know">
     <div class="box-title">为什么不用现成的打包工具?</div>
-    <p>社区常用的 antmicro zynq-mkbootimage 我们实测过:它的输出被 BootROM 直接拒收(第 6 章 JTAG 实测 PC 停在 ROM 错误循环);即使过了 ROM 这关,它对 ELF 分区做"节区块编码",与 FSBL 的裸拷贝语义也不相符。这才有了自写打包器。</p>
+    <p>社区常用的 antmicro zynq-mkbootimage 我们实测过:它的输出被 BootROM 直接拒收(<a href="ch6-debug.html">第 6 章</a> JTAG 实测 PC 停在 ROM 错误循环);即使过了 ROM 这关,它对 ELF 分区做"节区块编码",与 FSBL 的裸拷贝语义也不相符。这才有了自写打包器。</p>
     <p>由此沉淀的方法论:自制镜像要过三关——<strong>逐字节对照已知好样本</strong>(厂商 BOOT.BIN)、<strong>解剖器验证</strong>、<strong>真机 JTAG 验收</strong>,三者缺一不可。</p>
   </div>
-  <p>生成的 BOOT.BIN 直接落在了 sd/boot/ 里(5.2 节的目录就此凑齐);厂商模板建议留个只读副本,以后重打包还要用:</p>
+  <p>生成的 BOOT.BIN 直接落在 sd/boot/ 里(5.2 节的目录就此凑齐);厂商模板建议留个只读副本,以后重打包还要用:</p>
 <pre><code>cp vendor/BOOT.BIN vendor/BOOT.BIN.orig    <span class="c"># 模板留底,永远有退路</span></code></pre>
   <h3>5.4 extlinux.conf:四行启动菜单</h3>
-  <p>U-Boot 的 distro boot 约定:到各启动介质上找 <code>/extlinux/extlinux.conf</code>。这个文件就是内核启动菜单,我们这份全文只有四行。注意路径和文件名是约定死的,一个字母都不能错(路径与文件名按约定原样书写;顺带一提,BOOT.BIN 的大小写不敏感是 BootROM 的特性,这里没有这层宽松):</p>
+  <p>U-Boot 的 distro boot 约定:到各启动介质上找 <code>/extlinux/extlinux.conf</code>。这个文件就是内核启动菜单,我们这份全文只有四行。注意:路径与文件名请按约定书写(U-Boot 的 FAT 查找同样不区分大小写,distro boot 还会多试几种变体——但按约定原样书写、不依赖任何宽松,才是最稳的做法):</p>
 <pre><code>mkdir -p ~/zynq-mainline/sd/boot/extlinux
 cat &gt; ~/zynq-mainline/sd/boot/extlinux/extlinux.conf &lt;&lt;'EOF'
 <span class="k">label</span> Debian trixie (mainline 6.18) — Z7-Nano
@@ -218,7 +219,7 @@ echo "=== 制卡完成 ==="
   <p>里面还藏着一个调试半晚上的小坑:<code>lsblk -no RM</code> 的输出带前导空格,直接 <code>[ "$RM" = "1" ]</code> 永远不相等,必须 <code>tr -d ' '</code> 剥掉。shell 脚本的经典暗礁。</p>
   <div class="box box-warn">
     <div class="box-title">动手前改两处</div>
-    <p>脚本顶部的 <code>SD_DIR</code> 和 <code>ROOTFS</code> 是写死的绝对路径——为什么不用 ~?因为脚本要 sudo 运行,sudo 下 ~ 会展开成 /root 而不是你的家目录(第 7 章的坑)。用之前先改成你的实际路径。</p>
+    <p>脚本顶部的 <code>SD_DIR</code> 和 <code>ROOTFS</code> 是写死的绝对路径——为什么不用 ~?因为脚本要 sudo 运行,sudo 下 ~ 会展开成 /root 而不是你的家目录(<a href="ch7-pitfalls.html">第 7 章</a>的坑)。用之前先改成你的实际路径。</p>
   </div>
   <h4>第二段:分区与格式化</h4>
   <p><code>sfdisk</code> 从标准输入读分区表描述,三行搞定 5.1 节的布局:</p>
@@ -308,19 +309,19 @@ macb e000b000.ethernet end0: renamed from eth0   ← 铁证:网口改叫 end0
 Debian GNU/Linux 13 z7nano ttyPS0
 
 z7nano login: _                  ← 上电约 30 秒,到位</code></pre>
-  <p>如果时间线在哪一格停住了,别猜——静默的三大真凶(跳线错、FSBL 哑巴、镜像坏)症状一模一样,用第 6 章的 JTAG 看 PC 值分层定位,第 7 章有完整速查表。</p>
+  <p>如果时间线在哪一格停住了,别猜——静默的三大真凶(跳线错、FSBL 哑巴、镜像坏)症状一模一样,用<a href="ch6-debug.html">第 6 章</a>的 JTAG 看 PC 值分层定位,<a href="ch7-pitfalls.html">第 7 章</a>有完整速查表。</p>
   <p>不接 JTAG 的快速分诊,按"最后看到的输出"对号:</p>
   <table>
     <tr><th>最后停在</th><th>最可能的原因</th><th>第一动作</th></tr>
     <tr><td>完全静默(串口连一个字都没有)</td><td>跳线不在 SD 档 / 串口工具参数错 / 镜像被 BootROM 拒收</td><td>查跳线;确认 115200 8N1;再怀疑 BOOT.BIN(第 6 章验)</td></tr>
     <tr><td>U-Boot 横幅之后无下文</td><td>BOOT.BIN 里 p2 有问题或 U-Boot 设备树不对</td><td>第 2 章格式检查 + 重打包</td></tr>
-    <tr><td>Found extlinux.conf 之后卡住</td><td>FAT 里的 zImage/dtb 路径或文件不对</td><td>重新挂卡核对文件名,大小写也别错</td></tr>
+    <tr><td>Found extlinux.conf 之后卡住</td><td>FAT 里的 zImage/dtb 路径或文件不对</td><td>重新挂卡核对文件名(U-Boot 的 FAT 查找同样不区分大小写,但按约定原样书写最稳)</td></tr>
     <tr><td>Starting kernel… 之后黑屏</td><td>内核命令行或 dtb 不匹配(console 指错、内存大小错)</td><td>核对 extlinux.conf 的 append 与 dtb</td></tr>
     <tr><td>内核刷屏中途 panic</td><td>常见 root=/分区错、rootwait 忘加</td><td>读最后一屏错误信息,九成写着答案</td></tr>
     <tr><td>刷屏结束但 login 不出现</td><td>rootfs 问题:fstab 写错、模块树层级不对</td><td>核对第 4.4 节 fstab 与 /lib/modules 层级</td></tr>
   </table>
   <h3>5.7 登录进去:五连验证</h3>
-  <p>在串口里用第 4 章设置的账号登录(root / root),然后按顺序验证五件事——正好覆盖整条启动链。串口是"最后的安全网",ssh 是日常通道:前者永远在(不依赖网络),后者舒服(全速终端、能传文件),两个都通才算真正站稳:</p>
+  <p>在串口里用<a href="ch4-build.html">第 4 章</a>设置的账号登录(root / root),然后按顺序验证五件事——正好覆盖整条启动链。串口是"最后的安全网",ssh 是日常通道:前者永远在(不依赖网络),后者舒服(全速终端、能传文件),两个都通才算真正站稳:</p>
 <pre><code><span class="c"># 1) 跑的是我们自己编的内核吗?</span>
 uname -a
 <span class="c"># 期望:Linux z7nano &lt;你的版本号,手册示例 6.18.0&gt; … armv7l GNU/Linux</span>
@@ -351,7 +352,7 @@ ip addr add 192.168.1.10/24 dev end0</code></pre>
     <div class="box-title">手动配 IP 的一只暗雷</div>
     <p>手动 <code>ip addr add</code> 的地址,一次 <code>systemctl restart systemd-networkd</code> 就会被清掉——networkd 一接管,不属于自己的配置一律扫除。改网络配置前先想清楚"这块网卡现在归谁管":是 networkd(写 .network 文件),还是你手动。两头抢,必有一头失联。</p>
   </div>
-  <p>对了,新系统的 ssh 是我们第 4 章装的 openssh-server,现代协议全支持——第 1 章折腾出厂系统时那些 ssh-rsa 兼容配置,在这里统统不需要,直接 <code>ssh root@192.168.1.10</code>。想少打几个字,给电脑的 ~/.ssh/config 加个别名:</p>
+  <p>对了,新系统的 ssh 是我们<a href="ch4-build.html">第 4 章</a>装的 openssh-server,现代协议全支持——<a href="ch1-board.html">第 1 章</a>折腾出厂系统时那些 ssh-rsa 兼容配置,在这里统统不需要,直接 <code>ssh root@192.168.1.10</code>。想少打几个字,给电脑的 ~/.ssh/config 加个别名:</p>
 <pre><code>Host z7
     HostName 192.168.1.10
     User root

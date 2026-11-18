@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>第 7 章 · 踩坑大全 — Zynq Z7-Nano 主线 Linux 实战手册</title>
+<meta name="description" content="17 条真实踩坑按症状、根因、解法三段式归档,分硬件、工具、格式、网络、方法论五类,沉淀五条可迁移的元规律。">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
@@ -39,7 +40,7 @@
     <li>深夜排雷:BOOT.BIN 的三个格式坑,联手制造了当晚最长的沉默——多亏 JTAG 逐个击破;</li>
     <li>联网收尾:end0 改名、networkd 清地址、时间错乱,坑专挑松懈的时候出手。</li>
   </ul>
-  <p>这一章是完整账本:17 条坑,每条按<strong>症状(看到什么)→ 根因(为什么)→ 解法(怎么办)</strong>三段式展开,再附一条"同类预防"。这些坑的价值不止"下次避雷"——每条背后都藏着一条可迁移的规律,章末的「踩坑的元规律」会把它们收拢成 5 条。先看全貌:</p>
+  <p>这一章是完整账本:17 条坑,每条按<strong>症状(看到什么)→ 根因(为什么)→ 解法(怎么办)</strong>三段式展开,再附一条"同类预防"。这些坑的价值不止"下次避雷"——每条背后都藏着一条可迁移的规律,章末的"踩坑的元规律"一节会把它们收拢成 5 条。先看全貌:</p>
   <table>
     <tr><th>类别</th><th>条数</th><th>坑位</th><th>原时间线编号</th></tr>
     <tr><td>硬件类</td><td>4</td><td>坑 1–4</td><td>#1 / #2 / #12 / #17</td></tr>
@@ -66,7 +67,7 @@
       <li>正在排障:按类别找到你症状所在的那一组,对号入座读三段式;</li>
       <li>系统性学习:按组顺读,每读完一组问自己"这组的共同假设错在哪";</li>
       <li>复盘提炼:直接跳元规律,再回头找每条规律对应的坑;</li>
-      <li> 对照自查:把自己项目里的坑也按这个三段式记一遍——账本越记,坑越浅。</li>
+      <li>对照自查:把自己项目里的坑也按这个三段式记一遍——账本越记,坑越浅。</li>
     </ul>
   </div>
   <p>还有一条说明:每条坑的"解法"都是当晚实际奏效的做法,不是事后的理想化重构——能用、够快、可复现,就是好解法。</p>
@@ -88,7 +89,7 @@
       找不到启动介质,自然一个字都不会打印。</p>
   </div>
   <p><strong>解法:</strong>
-    核对跳线到 SD 档。不确定时用 JTAG 验证(第 6 章):
+    核对跳线到 SD 档。不确定时用 JTAG 验证(<a href="ch6-debug.html">第 6 章</a>):
     <code>mdw 0xF800025C</code> 读 BOOT_MODE 寄存器,读回 5 才是 SD 档。
     这是"串口全静默"的第一反应动作,成本 10 秒,排除一个最大嫌疑。</p>
   <p><strong>同类预防:</strong>上电前过一遍硬件检查单——跳线档位、线缆端口、供电来源,三项各看一眼再按开关。</p>
@@ -201,7 +202,7 @@
     <tr><td>U-Boot 主线</td><td><code>xilinx_zynq_virt_defconfig</code> + <code>DEVICE_TREE=</code></td><td>设备树(zynq-z7-nano.dts 同源)</td></tr>
   </table>
   <p>
-    趋势一致:单板 defconfig 退场,设备树接管一切板级描述(第 4 章)。</p>
+    趋势一致:单板 defconfig 退场,设备树接管一切板级描述(<a href="ch4-build.html">第 4 章</a>)。</p>
   <p><strong>同类预防:</strong>教程会过时,defconfig 的组织方式看主线仓库最准;报"No rule to make target"的第一反应应该是"目标名变了",而不是"我敲错了"。</p>
 
   <h3>坑 7 · FAT 分区上 cp -a 让脚本暴毙(原 #13) <code>工具</code></h3>
@@ -234,7 +235,7 @@
       所有波浪线路径当场失效。</p>
   </div>
   <p><strong>解法:</strong>
-    分区脚本里每个分区都<strong>显式写 start</strong>(本项目:p1 从扇区 8192 起,见第 5 章);
+    分区脚本里每个分区都<strong>显式写 start</strong>(本项目:p1 从扇区 8192 起,见<a href="ch5-sdcard.html">第 5 章</a>);
     脚本内一律绝对路径,不用波浪线。制卡脚本 <code>code/make-sd.sh</code> 两条都已修掉。</p>
   <p><strong>同类预防:</strong>凡是"默认值兜底"的参数,重要场合全部显式写——默认值会变,写死的不会。</p>
 
@@ -260,14 +261,14 @@
 
   <div class="box box-step">
     <div class="box-title">第三组 · 二进制格式类(坑 10–12,原 #9 / #10 / #11)</div>
-    <p>BOOT.BIN 不会说话,但它处处是暗号:魔术字、分区头、校验和、结束标记——每个字段都有精确语义,错一个字节就是全盘静默。这三条是当晚最深、也最有教学价值的雷区,也是第 2 章格式考古和第 6 章排雷方法论的直接导火索。</p>
+    <p>BOOT.BIN 不会说话,但它处处是暗号:魔术字、分区头、校验和、结束标记——每个字段都有精确语义,错一个字节就是全盘静默。这三条是当晚最深、也最有教学价值的雷区,也是<a href="ch2-bootchain.html">第 2 章</a>格式考古和<a href="ch6-debug.html">第 6 章</a>排雷方法论的直接导火索。</p>
     <p>格式坑的共同点:症状全部是"静默",反馈全部要靠 JTAG 拿——这正是第 6 章存在的理由。</p>
   </div>
 
   <h3>坑 10 · mkbootimage 的输出被 BootROM 拒收(原 #9) <code>格式</code></h3>
   <p><strong>症状:</strong>
     用 antmicro zynq-mkbootimage 打的 BOOT.BIN,上电全静默;
-    JTAG 读 PC,两核停在 0xFFFFFFxx——BootROM 的错误循环,连 FSBL 的门都没进(第 6 章速查表第一行)。
+    JTAG 读 PC,两核停在 0xFFFFFFxx——BootROM 的错误循环,连 FSBL 的门都没进(<a href="ch6-debug.html">第 6 章</a>速查表第一行)。
     出现环节:第一次用自己的 BOOT.BIN 替换厂商镜像——
     期待中的 U-Boot 横幅没有出现,出现的是整晚战役的开幕。</p>
   <div class="box box-warn">
@@ -278,7 +279,7 @@
       就算过了 ROM 这关,FSBL 也会把地址表当数据灌进内存。</p>
   </div>
   <p><strong>解法:</strong>
-    放弃该工具,自写打包器 <code>code/make-bootbin.py</code>(第 2 章):
+    放弃该工具,自写打包器 <code>code/make-bootbin.py</code>(<a href="ch2-bootchain.html">第 2 章</a>):
     以厂商 BOOT.BIN 的头部为模板原封不动,只替换 p2 数据、重写 p2 分区头——
     头部每个字节都有已知好样本背书,新增代码面缩到最小。</p>
   <p><strong>同类预防:</strong>第三方工具生成的二进制,用解剖器(<code>exbootimage -d</code>)拆开和已知好样本并排对看,再上真机——三重验收,一关都不能省。尤其当工具的实现语言(对 ELF 做节区编码)和你逆向出的消费方语义(裸拷贝)存在根本分歧时,先信语义,再查工具。</p>
@@ -286,7 +287,7 @@
   <h3>坑 11 · 分区表结束标记填 0xFF 是错的(原 #10) <code>格式</code></h3>
   <p><strong>症状:</strong>
     自制 BOOT.BIN 让 FSBL 数出 3 个分区,把垃圾当 p3 加载,
-    PC 停在 0x5364 fallback 自旋——第 6 章 6.6 节那个五步定位案例的完整出处就是这里。
+    PC 停在 0x5364 fallback 自旋——<a href="ch6-debug.html">第 6 章</a> 6.6 节那个五步定位案例的完整出处就是这里。
     出现环节:自写打包器的第一版。明明只放了两个分区,FSBL 却"看见"了第三个。</p>
   <div class="box box-warn">
     <div class="box-title">根因</div>
@@ -459,7 +460,7 @@ checksum = 0xFFFFFFFF - sum(w0..w14)</code></pre>
     <li><strong>工具的产出要三重验收。</strong>
       自制 BOOT.BIN 要过三关:逐字节对照已知好样本(厂商 BOOT.BIN)+
       解剖器验证(<code>exbootimage -d</code>)+ 真机 JTAG 验收
-      (坑 10 / 11 / 12 的总教训,也是第 3 章 3.3 的既定流程)。
+      (坑 10 / 11 / 12 的总教训,也是<a href="ch3-toolchain.html">第 3 章</a> 3.3 的既定流程)。
       任何一关缺失,坏镜像就会溜到下一个环节才爆——
       而那时,症状已经离病因很远,排查成本翻着倍涨。
       三关的成本是几分钟,漏一关的代价是一晚上。</li>

@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>第 6 章 · JTAG 调试方法论 — Zynq Z7-Nano 主线 Linux 实战手册</title>
+<meta name="description" content="OpenOCD 驱动板载 FT232H:三板斧读 PC、五值速查表分层定位、反汇编找符号、灌注救援与证据链三原则。">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
@@ -79,7 +80,7 @@
   </ul>
   <div class="box box-know">
     <div class="box-title">零 Xilinx 工具</div>
-    <p>整套 JTAG 排雷只用了 apt 一行装上的 OpenOCD(第 3 章),通过板载 FT232H 适配器驱动 Zynq 的 JTAG 链——Zynq-7000 的目标定义(<code>target/zynq_7000.cfg</code>)是 OpenOCD 自带的。整晚没有启动过一次 Vivado,JTAG 调试是完全开源的一环(第 3 章的替代方案表)。</p>
+    <p>整套 JTAG 排雷只用了 apt 一行装上的 OpenOCD(<a href="ch3-toolchain.html">第 3 章</a>),通过板载 FT232H 适配器驱动 Zynq 的 JTAG 链——Zynq-7000 的目标定义(<code>target/zynq_7000.cfg</code>)是 OpenOCD 自带的。整晚没有启动过一次 Vivado,JTAG 调试是完全开源的一环(<a href="ch3-toolchain.html">第 3 章</a>的替代方案表)。</p>
   </div>
 
   <h3>6.2 OpenOCD 上手</h3>
@@ -193,7 +194,7 @@
       串口全静默时,这一刀切开两种世界——连启动介质都找不到(去查跳线),
       还是找到了但镜像有问题(去查 BOOT.BIN)。寄存器不会撒谎,跳线不会伪装;</li>
     <li><strong>PartitionCount @ 0x1AC38</strong>:
-      FSBL 扫描分区表后数出的分区数。我们曾被"分区表结束标记"坑过(第 7 章坑 11(原 #10)):
+      FSBL 扫描分区表后数出的分区数。我们曾被"分区表结束标记"坑过(<a href="ch7-pitfalls.html">第 7 章</a>坑 11(原 #10)):
       FSBL 数出 3 个分区、把垃圾当 p3 加载——不用猜,mdw 一读便知。</li>
   </ul>
   <p><code>reg pc</code> 告诉你"死在哪",<code>mdw</code> 告诉你"死前现场留下了什么"——两者配合,大部分静默故障都能定位到具体环节。</p>
@@ -232,7 +233,7 @@
   <p>用这张表之前,先明确一个前提——<strong>halt 拿到的 PC 是"当前瞬间"的现场</strong>,读数的含义取决于系统此刻该在哪:</p>
   <ul>
     <li>卡死的系统(错误循环、自旋)在任何时刻 halt,PC 都落在同一个值上,随时可读;</li>
-    <li>正常推进的系统,PC 一直在变——收官状态下的实测节奏是:上电后静默约 3 秒(FSBL 在干活),随后 U-Boot 横幅出现(第 5 章);</li>
+    <li>正常推进的系统,PC 一直在变——收官状态下的实测节奏是:上电后静默约 3 秒(FSBL 在干活),随后 U-Boot 横幅出现(<a href="ch5-sdcard.html">第 5 章</a>);</li>
     <li>所以上电三五秒后再 halt,读到的位置才说明"系统停在了哪";刚上电就 halt,大概率只是抓到了正在干活的 FSBL。</li>
   </ul>
   <p>逐行展开——每一行都是"看到这个值说明什么 / 下一步做什么":</p>
@@ -245,7 +246,7 @@
     <li><code>mdw 0xF800025C</code> 确认跳线是不是 SD 档——不是 5 就先去掰跳线,别的都不用看;</li>
     <li>跳线没问题,嫌疑就集中在 BOOT.BIN 本身:ROM 头(魔术字 <code>0xAA995566</code> @0x20)或分区头被拒收;</li>
     <li>下一步是逐字节对照厂商 BOOT.BIN 的头部找差异(第 3 章 3.3 的三重验收法)。
-        antmicro mkbootimage 的输出就死在这里(第 7 章坑 10(原 #9))。</li>
+        antmicro mkbootimage 的输出就死在这里(<a href="ch7-pitfalls.html">第 7 章</a>坑 10(原 #9))。</li>
   </ol>
   <h4>PC = 0x5364:FSBL 的 fallback 自旋</h4>
   <p><strong>说明什么</strong>:
@@ -271,7 +272,7 @@
     搬家是为了把低地址空间腾出来留给内核加载。
     接下来该走 distro boot 扫描启动介质上的 <code>/extlinux/extlinux.conf</code> 了。</p>
   <p><strong>下一步</strong>:
-    检查 SD 卡第一分区有没有 extlinux 目录、conf 里的 kernel/fdt 路径对不对(第 5 章)。</p>
+    检查 SD 卡第一分区有没有 extlinux 目录、conf 里的 kernel/fdt 路径对不对(<a href="ch5-sdcard.html">第 5 章</a>)。</p>
   <h4>PC = 0xC0xxxxxx:内核在跑!</h4>
   <p><strong>说明什么</strong>:
     这是 Linux 内核的虚拟地址空间——内核已经启动了。
@@ -288,8 +289,8 @@
   <h3>6.6 反汇编定位:从 PC 到函数名</h3>
   <p>PC 给了地址,但"0x5364 是哪行代码"还差两步翻译。先交代一件事:<strong>反汇编要对 ELF 做,不是对烧进镜像的平铺 bin 做</strong>——ELF 里才有符号表;objcopy 拍平成 bin 的那一刻,函数名就全被剥掉了,只剩光秃秃的字节。</p>
   <ul>
-    <li>FSBL 的 ELF:厂商 demo 包里的 <code>zynq_fsbl.elf</code>(第 2 章提过,FSBL 可直接复用厂商现成版);</li>
-    <li>U-Boot 的 ELF:构建产物之一(第 4 章)——<code>u-boot-dtb.bin</code> 是给 BOOT.BIN 当 p2 的平铺版,<code>u-boot</code> ELF 专门留给 JTAG 调试用。</li>
+    <li>FSBL 的 ELF:厂商 demo 包里的 <code>zynq_fsbl.elf</code>(<a href="ch2-bootchain.html">第 2 章</a>提过,FSBL 可直接复用厂商现成版);</li>
+    <li>U-Boot 的 ELF:构建产物之一(<a href="ch4-build.html">第 4 章</a>)——<code>u-boot-dtb.bin</code> 是给 BOOT.BIN 当 p2 的平铺版,<code>u-boot</code> ELF 专门留给 JTAG 调试用。</li>
   </ul>
   <p>两份 ELF 就位,nm 和 objdump 出场。</p>
   <h4>第一步:nm + awk 找符号</h4>
@@ -325,7 +326,7 @@
     <li><code>nm + awk</code> → 包住 0x5364 的符号是 FsblHookFallback,证实判断;</li>
     <li><code>objdump -d</code> → 5364 处正是 <code>b 5364</code> 自旋,确认"躺平等查";</li>
     <li><code>mdw 0x1AC38</code> → PartitionCount = 3(正常应为 2)——FSBL 数出了多余分区,把垃圾当 p3 加载了;</li>
-    <li>结论:分区表结束标记填错(填了全 0xFF,正确应为 15×0 + 0xFFFFFFFF)——直接指向第 7 章坑 11(原 #10);</li>
+    <li>结论:分区表结束标记填错(填了全 0xFF,正确应为 15×0 + 0xFFFFFFFF)——直接指向<a href="ch7-pitfalls.html">第 7 章</a>坑 11(原 #10);</li>
     <li>修复并回归:打包器按正确格式重写结束标记,重新生成 BOOT.BIN 制卡上电——静默 3 秒后 U-Boot 横幅出现,闭环。</li>
   </ol>
   <p>五步,从"串口静默"走到"具体哪个字段填错",外加第六步回归验证关闭循环。这就是显微镜调试:每一步都有证据,没有一个环节靠猜。</p>
@@ -390,7 +391,7 @@
     <div class="box-title">三个真凶里,哑巴 FSBL 最阴险</div>
     <p>跳线错和镜像坏好歹是"病",哑巴 FSBL 却是"健康的沉默":debug 打印被编译关闭,它一声不吭地把 DDR 初始化、把分区搬运、把控制权交出去,全程不吐一个字。它教会我们一条铁律:<strong>"串口没输出"≠"没在跑"</strong>。多少次你以为系统死了,其实它正忙着干活。</p>
   </div>
-  <p>JTAG 的价值,正在于每一层都有<strong>可观测点</strong>,不依赖任何一层"愿意说话"。第 2 章讲了启动链每一环的职责,这一章给每一环配上观测点:</p>
+  <p>JTAG 的价值,正在于每一层都有<strong>可观测点</strong>,不依赖任何一层"愿意说话"。<a href="ch2-bootchain.html">第 2 章</a>讲了启动链每一环的职责,这一章给每一环配上观测点:</p>
   <table>
     <tr><th>层</th><th>可观测点</th><th>怎么看</th></tr>
     <tr><td>BootROM</td><td>PC=0xFFFFFFxx;BOOT_MODE 寄存器</td><td><code>reg pc</code>;<code>mdw 0xF800025C</code>(=5 即 SD 档)</td></tr>

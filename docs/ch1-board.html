@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="Z7-Nano 开箱:认清双 type-C 与双网口分工,连串口登录出厂系统、配通网络,再用 XADC 给芯片量体温。">
 <title>第 1 章 · 硬件档案与开箱 — Zynq Z7-Nano 主线 Linux 实战手册</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
@@ -64,7 +65,7 @@
     </tr>
     <tr>
       <td>内存</td>
-      <td>DDR3 512MB,物理地址从 0x0 起(内核可见约 479MB——为何不足 512?内核保留区吃掉了零头,第 04 章 4.5 有交代)</td>
+      <td>DDR3 512MB,物理地址从 0x0 起(内核可见约 479MB——为何不足 512?内核保留区吃掉了零头,<a href="ch4-build.html">第 04 章</a> 4.5 有交代)</td>
       <td>设备树 memory 节点要写 0x20000000(512MB)</td>
     </tr>
     <tr>
@@ -75,11 +76,11 @@
     <tr>
       <td>JTAG</td>
       <td>板载 <strong>FT232H</strong>(USB VID:PID 0403:6014),接 type-C「JTAG」口</td>
-      <td>OpenOCD 可直接驱动,第 06 章排雷全靠它</td>
+      <td>OpenOCD 可直接驱动,<a href="ch6-debug.html">第 06 章</a>排雷全靠它</td>
     </tr>
     <tr>
       <td>网口 ×2</td>
-      <td><strong>PS ETH</strong>:Zynq GEM @ 0xE000B000 + Realtek RTL8211F PHY(RGMII-ID,PHY 挂 MDIO 地址 1,复位脚 MIO46)——系统可直接用;<strong>PL ETH</strong>:需要 FPGA 逻辑,当前系统不可用</td>
+      <td><strong>PS ETH</strong>:Zynq GEM @ 0xE000B000 + Realtek RTL8211F PHY(RGMII-ID,即带内嵌延时的千兆 MAC-PHY 接口;PHY 挂 MDIO 地址 1——MDIO 是 CPU 管理 PHY 的串行总线;复位脚 MIO46)——系统可直接用;<strong>PL ETH</strong>:需要 FPGA 逻辑,当前系统不可用</td>
       <td>网线必须插 PS ETH;插错口是新手第一大坑</td>
     </tr>
     <tr>
@@ -101,18 +102,18 @@
       <li><strong>PS(Processing System,处理系统)</strong>:双核 Cortex-A9 加上 DDR 控制器、千兆网、USB、SD 卡、UART 等一整套外设——本质上就是一颗完整的 ARM SoC,跑 Linux 全靠它;</li>
       <li><strong>PL(Programmable Logic,可编程逻辑)</strong>:Artix-7 级的 FPGA fabric,不烧比特流就没有灵魂——板上的第二个网口(PL ETH)和其它高速接口都归它管。</li>
     </ul>
-    <p>本手册<strong>全程只动 PS</strong>:Linux 在 PS 上跑,不碰 PL 一根毛。想开垦 PL(写逻辑、点 HDMI),见第 08 章路线图。还有一个贯穿全册的推论:Zynq-7000 <strong>没有 pinctrl 子系统</strong>,PS 侧引脚复用(MIO)由 FSBL 里的 ps7_init 完成,设备树只描述设备、不管引脚——第 02 章会展开。</p>
+    <p>本手册<strong>全程只动 PS</strong>:Linux 在 PS 上跑,不碰 PL 一根毛。想开垦 PL(写逻辑、点 HDMI),见<a href="ch8-roadmap.html">第 08 章</a>路线图。还有一个贯穿全册的推论:Zynq-7000 <strong>没有 pinctrl 子系统</strong>,PS 侧引脚复用(MIO)由 FSBL 里的 ps7_init 完成,设备树只描述设备、不管引脚——<a href="ch2-bootchain.html">第 02 章</a>会展开。</p>
   </div>
 
   <h4>双 type-C 的分工与供电小聪明</h4>
-  <p>板上两个 type-C 口长得很像,分工却完全不同:<strong>UART 口</strong>里是 CH340E 串口芯片,负责控制台;<strong>JTAG 口</strong>里是 FT232H,负责调试。而它们的 5V(VBUS)都经过 OR 二极管汇到主电源——所谓 OR 二极管,就是让两个口的电"谁的电压高用谁的"、互相不会倒灌。这带来一个实用结论:<strong>只插一根线也能开机</strong>,你不需要专门找供电口;但也意味着"插了线"不代表"接对了口"——按功能认口,别按"能不能亮"认口。</p>
+  <p>板上两个 type-C 口长得很像,分工却完全不同:<strong>UART 口</strong>里是 CH340E 串口芯片,负责控制台;<strong>JTAG 口</strong>里是 FT232H,负责调试。而它们的 5V(VBUS)都经过 OR 二极管汇到主电源——所谓 OR 二极管,就是让两个口的电"谁的电压高用谁的",不会互相倒灌。这带来一个实用结论:<strong>只插一根线也能开机</strong>,你不需要专门找供电口;但也意味着"插了线"不代表"接对了口"——按功能认口,别按"能不能亮"认口。</p>
 
   <h3>1.2 开箱第一步:连上串口</h3>
-  <p>出厂 SD 卡里是 PetaLinux 2018.3:FAT32 根目录放着 10.6MB 的 BOOT.BIN(一个文件里打包了 FSBL、u-boot、image.ub 三个分区)和一个 image.ub。我们的策略是:<strong>先让出厂系统跑起来</strong>。这一步一石三鸟:验证硬件完好(串口、网口、DDR、SD 顺带全测了)、熟悉控制台环境、并且给移植留一个"对照组"——厂商的 BOOT.BIN 之后会成为我们自写打包器的模板。</p>
+  <p>出厂 SD 卡里是 PetaLinux 2018.3:FAT32 根目录放着 10.6MB 的 BOOT.BIN(一个文件里打包了 FSBL、u-boot、image.ub 三个分区)和一个 image.ub。我们的策略是:<strong>先让出厂系统跑起来</strong>。这一步一石三鸟:验证硬件完好(串口、网口、DDR、SD 顺带全测了)、熟悉控制台环境,还给移植留一个"对照组"——厂商的 BOOT.BIN 之后会成为我们自写打包器的模板。</p>
 
   <div class="box box-know">
     <div class="box-title">为什么要留"对照组"</div>
-    <p>后面第 02 章会讲到:验证自己生成的启动镜像,最可靠的办法之一是<strong>逐字节对照已知好样本</strong>。厂商出厂的 BOOT.BIN 就是那个"已知好样本"——它确定能启动,任何我们自制的镜像拿不准时,和它逐段比对,差异处就是嫌疑处。所以出厂 SD 卡请妥善保管,别手滑格式化。</p>
+    <p>后面<a href="ch2-bootchain.html">第 02 章</a>会讲到:验证自己生成的启动镜像,最可靠的办法之一是<strong>逐字节对照已知好样本</strong>。厂商出厂的 BOOT.BIN 就是那个"已知好样本"——它确定能启动,任何我们自制的镜像拿不准时,和它逐段比对,差异处就是嫌疑处。所以出厂 SD 卡请妥善保管,别手滑格式化。</p>
   </div>
 
   <p>把 type-C 线插到标着 <strong>UART</strong> 的口(注意,是 UART 口,不是 JTAG 口),另一头接电脑,然后确认系统认出了 CH340:</p>
@@ -157,14 +158,14 @@ python3 uart.py probe        <span class="c"># 拿不准板子在哪个界面?�
   <h3>1.3 登录出厂系统</h3>
   <p>跳线确认在 SD 档(跳线是板上丝印 BOOT/SW1 的多位拨码开关,档位含义以板面丝印为准,拿不准就对照厂商《开箱测试》文档)、出厂 SD 卡插好、监听开着,上电。几秒后串口应滚出 U-Boot 与内核的启动日志,最后停在登录提示:</p>
   <pre><code>petalinux-boot-from-sd login:</code></pre>
-  <p>登录名 <strong>root</strong>,密码 <strong>root</strong>(出厂系统的默认值)。进系统后先跑两条命令安安心:</p>
+  <p>登录名 <strong>root</strong>,密码 <strong>root</strong>(出厂系统的默认值)。进系统后先跑两条命令安个心:</p>
   <pre><code>cat /proc/version        <span class="c"># 看看出厂内核版本,心里有个对照</span>
 free -m                  <span class="c"># DDR 512MB,内核可见约 479MB,正常</span></code></pre>
   <p>看到 shell 提示符,恭喜:SoC、DDR、SD 卡、串口这条链路全部工作正常——这已经排除了相当一批硬件故障。接下来把网络也点亮。</p>
 
   <div class="box box-know">
     <div class="box-title">知识框:控制台为什么叫 ttyPS0</div>
-    <p>Zynq PS 的 UART 是 Cadence IP,内核把它注册成 <strong>ttyPS</strong> 系列设备——ttyPS0 就是第一个 PS 串口,也就是我们的 UART0。所以后面新系统的内核命令行写的是 <code>console=ttyPS0,115200</code>;而 <code>earlycon=cdns,mmio,0xE0000000</code> 是更早的"预控制台",直接往 UART0 寄存器基址写字符——内核起来之前它就能出声,排障时极有用(第 05 章的 extlinux.conf 里会见到它俩)。</p>
+    <p>Zynq PS 的 UART 是 Cadence IP,内核把它注册成 <strong>ttyPS</strong> 系列设备——ttyPS0 就是第一个 PS 串口,也就是我们的 UART0。所以后面新系统的内核命令行写的是 <code>console=ttyPS0,115200</code>;而 <code>earlycon=cdns,mmio,0xE0000000</code> 是更早的"预控制台",直接往 UART0 寄存器基址写字符——内核起来之前它就能出声,排障时极有用(<a href="ch5-sdcard.html">第 05 章</a>的 extlinux.conf 里会见到它俩)。</p>
   </div>
 
   <h3>1.4 把网络跑通:配 IP 与双向 ping</h3>
@@ -175,7 +176,7 @@ free -m                  <span class="c"># DDR 512MB,内核可见约 479MB,正�
   <div class="box box-step">
     <div class="box-title">步骤 1:板上配 IP(串口里执行)</div>
     <pre><code>ifconfig eth0 192.168.1.10 netmask 255.255.255.0 up</code></pre>
-    <p>给板子的 eth0 配上 192.168.1.10/24 并拉起接口。注意这是<strong>老出厂系统</strong>,网卡还叫 eth0;换成我们自己的新系统后它会改名叫 end0(第 07 章的坑表有讲这个改名风波)。</p>
+    <p>给板子的 eth0 配上 192.168.1.10/24 并拉起接口。注意这是<strong>老出厂系统</strong>,网卡还叫 eth0;换成我们自己的新系统后它会改名叫 end0(<a href="ch7-pitfalls.html">第 07 章</a>的坑表有讲这个改名风波)。</p>
   </div>
 
   <div class="box box-step">
@@ -214,7 +215,7 @@ ping 192.168.1.10</code></pre>
     HostName 192.168.1.10
     HostKeyAlgorithms +ssh-rsa
     PubkeyAcceptedAlgorithms +ssh-rsa</code></pre>
-  <p>之后 <code>ssh root@fpga</code>(或 <code>ssh root@192.168.1.10</code>)即可,密码 root。另外两个细节:老 dropbear 连 ed25519 用户密钥也不认,RSA 密钥加强制 ssh-rsa 才能通;公钥认证还有 PAM 相关的坑没完全解开,密码方式是稳妥的。当然,这些只影响老系统——换成我们的 Debian 13 后,一切现代化问题烟消云散。</p>
+  <p>之后 <code>ssh root@fpga</code>(或 <code>ssh root@192.168.1.10</code>)即可,密码 root。另外两个细节:老 dropbear 连 ed25519 用户密钥也不认,RSA 密钥也要强制 ssh-rsa 才能通;公钥认证还有 PAM 相关的坑没完全解开,密码方式是稳妥的。当然,这些只影响老系统——换成我们的 Debian 13 后,一切现代化问题烟消云散。</p>
 
   <h3>1.5 XADC 体检:给芯片量体温</h3>
   <p>Zynq 芯片内部自带一路 XADC(12 位 ADC),专门用来测<strong>结温</strong>和各路<strong>电源轨电压</strong>——相当于芯片自带的体检报告,不需要任何外部仪表。出厂内核已经把它挂成了 IIO 设备:</p>
@@ -245,7 +246,7 @@ ls                                <span class="c"># 列出所有通道文件(通
   <p>六项全绿,说明板子硬件无恙、你的操作环境(串口、网络)也已就绪——接下来就可以放心大干一场了。</p>
 
   <h3>1.7 常见问题快修</h3>
-  <p>开箱阶段的高频故障,按"症状 → 第一反应"列出;更全的坑表见第 07 章。</p>
+  <p>开箱阶段的高频故障,按"症状 → 第一反应"列出;更全的坑表见<a href="ch7-pitfalls.html">第 07 章</a>。</p>
   <table>
     <tr><th>症状</th><th>第一反应</th><th>为什么</th></tr>
     <tr><td>串口完全没输出</td><td>查跳线是否在 SD 档;换一根 type-C 线</td><td>跳线不在 SD 档时 BootROM 空等(全静默);线接触不良会让 CH340 干净地消失</td></tr>
@@ -275,7 +276,7 @@ ls                                <span class="c"># 列出所有通道文件(通
     <p>本章流程(连串口 → 登录 → 通网 → 体检)对任何 Zynq-7000 板都成立,要换的是这几个"因板而异"的参数:</p>
     <ul>
       <li><strong>串口</strong>:是 UART0 还是 UART1 做控制台?波特率通常仍是 115200;</li>
-      <li><strong>PHY</strong>:型号、MDIO 地址、复位脚(本板是 RTL8211F @ 地址 1、MIO46)——不确定时可以先让驱动全总线扫描(第 04 章设备树一节讲这招);</li>
+      <li><strong>PHY</strong>:型号、MDIO 地址、复位脚(本板是 RTL8211F @ 地址 1、MIO46)——不确定时可以先让驱动全总线扫描(<a href="ch4-build.html">第 04 章</a>设备树一节讲这招);</li>
       <li><strong>内存大小</strong>:设备树 memory 节点按实际 DDR 容量写;</li>
       <li><strong>FSBL</strong>:必须用你板子的厂商 BOOT.BIN 当模板——FSBL 里的 ps7_init 参数每块板不同,张冠李戴会初始化出错误的 DDR 时序。</li>
     </ul>

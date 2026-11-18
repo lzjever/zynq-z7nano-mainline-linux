@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="吃透 Zynq 四级启动链 BootROM、FSBL、U-Boot 到内核,逐字节解剖 BOOT.BIN 容器格式。">
 <title>第 2 章 · 启动链与 BOOT.BIN 格式 — Zynq Z7-Nano 主线 Linux 实战手册</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
@@ -53,7 +54,7 @@
       <li><strong>hdf</strong>:硬件 handoff 文件,Vivado 工程导出的板级参数包,ps7_init 的源头;</li>
       <li><strong>BOOT.BIN</strong>:Zynq 的启动镜像容器,BootROM 与 FSBL 只认这个格式;</li>
       <li><strong>distro boot / extlinux</strong>:U-Boot 的通用启动机制,按 extlinux.conf 文本加载内核;</li>
-      <li><strong>平铺二进制(flat binary)</strong>:文件内容即内存影像的可执行格式,区别于 ELF;</li>
+      <li><strong>平铺二进制(flat binary)</strong>:文件内容即内存影像的可执行格式,区别于 ELF(带文件头的标准可执行文件格式);</li>
       <li><strong>分区头 / 镜像头</strong>:BOOT.BIN 里描述"搬什么、搬到哪、怎么验"的两级元数据;</li>
       <li><strong>TEXT_BASE</strong>:程序的链接/加载地址,我们 U-Boot 的落脚点是 0x04000000;</li>
       <li><strong>image.ub</strong>:PetaLinux 打包的内核镜像,厂商方案的第三分区(我们的方案不再用它)。</li>
@@ -93,7 +94,7 @@
     </div>
   </div>
 
-  <p>先给一张速查表(失败症状一列来自第 6 章 JTAG 实测的 PC 速查表,现在混个眼熟,排雷时回来查;PC 是程序计数器,JTAG 读它是"看程序卡在哪"的直接手段):</p>
+  <p>先给一张速查表(失败症状一列来自<a href="ch6-debug.html">第 6 章</a> JTAG 实测的 PC 速查表,现在混个眼熟,排雷时回来查;PC 是程序计数器,JTAG 读它是"看程序卡在哪"的直接手段):</p>
 
   <table>
     <tr><th>接力棒</th><th>代码来源</th><th>跑在哪里</th><th>失败时的典型症状</th></tr>
@@ -104,7 +105,7 @@
   </table>
   <p>一个补充特征:BootROM 错误循环的典型样子是"两个核都停在那儿"——JTAG 一列目标,两核 PC 同在 0xFFFFFFxx,基本可以结案"启动镜像被拒"。</p>
 
-  <p>每一棒都在为下一棒"解锁新能力",这也是启动链设计成四级的原因——每一级都需要前一级造出的世界里才存在的资源。注意"解锁"是单向的:内核永远不能替 FSBL 初始化 DDR,因为内核自己就住在 DDR 里。</p>
+  <p>每一棒都在为下一棒"解锁新能力",这也是启动链设计成四级的原因——每一级的运行条件,都要等前一级把世界造出来才具备。注意"解锁"是单向的:内核永远不能替 FSBL 初始化 DDR,因为内核自己就住在 DDR 里。</p>
 
   <table>
     <tr><th>交接完成后</th><th>世界新获得了什么</th><th>解锁了谁的运行条件</th></tr>
@@ -128,10 +129,11 @@
       <li>按 BOOT.BIN 格式解析头部。它对文件系统的认知极有限:SD 启动时只会在<strong>第一个 FAT 分区的根目录</strong>里找名为 boot.bin 的文件(只读、大小写不敏感)——这正是引导文件"名字固定、位置固定"的根本原因;</li>
       <li>把第一个分区(FSBL)搬进 OCM 并跳过去。</li>
     </ol>
+    <p>关于"大小写不敏感"再补一句精确说明:U-Boot 的 FAT 查找其实也不区分大小写(distro boot 还会多试几种变体);但无论哪一级在找文件,按约定原样书写文件名永远是最佳实践。</p>
     <p><strong>为什么它不初始化 DDR?</strong>不是偷懒,是"不能":DDR 初始化需要几千条带板级参数的寄存器写——DDR 颗粒型号、时序、走线拓扑,每块板都不一样。</p>
     <p>而 BootROM 是"每颗芯片一份"的通用代码,不携带任何一块具体板子的信息。板级知识的缺失,正是下一棒 FSBL 存在的全部理由。</p>
     <p>失败行为值得牢记:找不到合法镜像,BootROM 就进入错误循环再也不回头——JTAG 实测 PC 停在 0xFFFFFF34。</p>
-    <p>另一个"假死"变体:跳线拨在 JTAG 档时,BootROM 安静地空等主机指令,症状同样是全静默。所以<strong>串口全静默的第一反应永远是查跳线</strong>(第 7 章踩坑 1 号)。</p>
+    <p>另一个"假死"变体:跳线拨在 JTAG 档时,BootROM 安静地空等主机指令,症状同样是全静默。所以<strong>串口全静默的第一反应永远是查跳线</strong>(<a href="ch7-pitfalls.html">第 7 章</a>踩坑 1 号)。</p>
     <p>顺带一个给第 6 章埋的伏笔:BootROM 会把 OCM 重映射到地址 0x0,JTAG 灌 FSBL 时就要用 0x0 这个地址;JTAG 档的"空等"也并非废物——第 6 章的经典救援正是让 BootROM 待在 JTAG 档听候调遣。</p>
     <p>一句话记住:<strong>BootROM 只做最低限度的通用工作,板级的事一件不碰。</strong></p>
   </div>
@@ -147,7 +149,7 @@
       <li><strong>MIO 引脚复用</strong>——哪个引脚当 UART、哪个当网口(Zynq-7000 没有 pinctrl 子系统,引脚的命在这里定)。</li>
     </ul>
     <p>参数从哪来?来自 Vivado 硬件工程——原理图上 DDR 颗粒的选型、晶振频率、每个 MIO 接什么外设,统统汇总进硬件 handoff 文件(.hdf),再生成 ps7_init。<strong>这就是 ps7_init 每块板不同的原因:它就是"这块板子的基因"</strong>,Zedboard 的 ps7_init 拿到 Z7-Nano 上跑,DDR 大概率起不来。</p>
-    <p><strong>FSBL 是开源的、可改的</strong>:源码在 github.com/Xilinx/embeddedsw 的 lib/sw_apps/zynq_fsbl/ 目录(本项目用 xilinx-v2018.3 tag)。想改它完全合法且可行——比如打开 FSBL_DEBUG_INFO 编一版"响亮的 FSBL",让启动过程逐条打印、所有静默故障无处遁形(这是第 8 章路线图的第一项)。</p>
+    <p><strong>FSBL 是开源的、可改的</strong>:源码在 github.com/Xilinx/embeddedsw 的 lib/sw_apps/zynq_fsbl/ 目录(本项目用 xilinx-v2018.3 tag)。想改它完全合法且可行——比如打开 FSBL_DEBUG_INFO 编一版"响亮的 FSBL",让启动过程逐条打印、所有静默故障无处遁形(这是<a href="ch8-roadmap.html">第 8 章</a>路线图的第一项)。</p>
     <p><strong>那厂商给的 FSBL 为什么是"哑巴"?</strong>厂商交付的 zynq_fsbl.elf 把 debug 打印编译关闭了,正常运行也一声不吭——出厂系统上电后串口安静两三秒属正常现象。</p>
     <p>记住这句在全书反复出现的话:<strong>"串口没输出"≠"没在跑"</strong>。我们的策略:直接复用厂商现成 ELF(它对这块板是"已知好"的),把精力省下来花在别处。</p>
     <p>ps7_init 跑完,FSBL 回到 BOOT.BIN:读取后续分区,裸拷贝进 DDR,跳到分区头指定的 dest_exec(细节见 2.3 节)。</p>
@@ -165,7 +167,7 @@
     <p>这个机制的价值怎么强调都不过分:<strong>换内核、换设备树、改内核命令行,只需编辑 SD 卡上的 extlinux.conf 文本文件,永远不必重编、重打包 U-Boot</strong>。</p>
     <p>整条启动链里最"贵"的操作(动 BOOT.BIN)被一次固定,其余环节全部变成可快速迭代的开源构建。第 5 章制卡时会看到我们的 extlinux.conf 全文。</p>
     <p>地址上记两个数:我们 U-Boot 的加载/跳转地址是 0x04000000(TEXT_BASE,也就是 BOOT.BIN 里 p2 分区头的 dest_load/dest_exec)。</p>
-    <p>跑起来之后它会把自身重定位到 DDR 顶端(0x1FFxxxxx 一带)——第 6 章 JTAG 看到那里的 PC,就知道 U-Boot 活着。BOOTDELAY=2 也不是摆设:那两秒是你打断自动启动、进 U-Boot 命令行的窗口。</p>
+    <p>跑起来之后它会把自身重定位到 DDR 顶端(0x1FFxxxxx 一带)——<a href="ch6-debug.html">第 6 章</a>用 JTAG 在那里看到 PC,就知道 U-Boot 活着。BOOTDELAY=2 也不是摆设:那两秒是你打断自动启动、进 U-Boot 命令行的窗口。</p>
     <p>一句话记住:<strong>U-Boot 的本事是"认识文件系统",这让我们把内核从 BOOT.BIN 里解放出来。</strong></p>
   </div>
 
@@ -180,7 +182,7 @@
     append root=/dev/mmcblk0p2 rootwait rw console=ttyPS0,115200 earlycon=cdns,mmio,0xE0000000</code></pre>
     <p>命令行里两个值得认识的参数:<code>console=ttyPS0,115200</code> 把控制台钉在 UART0;<code>earlycon=cdns,mmio,0xE0000000</code> 让内核在串口驱动加载之前就能往 0xE0000000(UART0 基址)写字——内核起跑阶段出问题,靠它看到第一现场。</p>
     <p>内核解压自身、按设备树枚举设备、挂载 ext4 分区上的 Debian 13,systemd 接管,登录提示符出现——上电到 login 实测约 30 秒。</p>
-    <p>体量上有个概念:我们编出的 zImage 约 11.7MB,另外 899 个内核模块(约 120MB)住进 rootfs 的 /lib/modules——都在第 4 章构建时细讲。</p>
+    <p>体量上有个概念:我们编出的 zImage 约 11.7MB,另外 899 个内核模块(约 120MB)住进 rootfs 的 /lib/modules——都在<a href="ch4-build.html">第 4 章</a>构建时细讲。</p>
     <p>一个把第 ②、④ 棒串起来的冷知识:Zynq-7000 <strong>没有 pinctrl 子系统</strong>——MIO 引脚复用由 FSBL 的 ps7_init 完成,设备树只描述设备、不管引脚。</p>
     <p>所以你在设备树里找不到"引脚配置"不是漏写:引脚的命早在 FSBL 阶段就定好了。一句话记住:<strong>设备树描述"有什么设备",ps7_init 决定"引脚怎么接",两者合起来才是完整的板子。</strong></p>
   </div>
@@ -241,7 +243,7 @@ T+30s    z7nano login:</code></pre>
                                    /zImage + /zynq-z7-nano.dtb,
                                    由 extlinux.conf 指路,U-Boot 直接读</code></pre>
   <p>收益立竿见影:<strong>以后每次换内核,只是往 FAT 分区拷几个文件,BOOT.BIN 永不再动</strong>——把 2.1 节"U-Boot 认识文件系统"的能力用到了极限。代价只有一个:BOOT.BIN 的 p2 必须装一个支持 distro boot 的现代 U-Boot,而这正是主线 U-Boot 的默认行为。</p>
-  <p>这个决策还顺带简化了打包器:只处理两个分区、一个结束标记,80 行 Python 就够(第 3 章)。分层的好处会一路传导到工具的复杂度上。</p>
+  <p>这个决策还顺带简化了打包器:只处理两个分区、一个结束标记,80 行 Python 就够(<a href="ch3-toolchain.html">第 3 章</a>)。分层的好处会一路传导到工具的复杂度上。</p>
 
   <h4>ROM 头:先认魔术字</h4>
   <p>ROM 头占 0x8C0 字节,里面是 FSBL 长度和各种指针,但日常真正要认的是 <strong>0x20 处的魔术字 0xAA995566</strong>——小端序落盘就是字节序列 <code>66 55 99 AA</code>。我们打包器拿模板的第一件事就是验它:</p>
@@ -284,7 +286,7 @@ T+30s    z7nano login:</code></pre>
     <tr><td>2 号</td><td>0xD00</td><td>结束标记(15×0 + 0xFFFFFFFF)</td></tr>
     <tr><td>3 号</td><td>0xD40</td><td>厂商三分区布局的结束标记(练习见页底)</td></tr>
   </table>
-  <p>w0–w2 三个长度字段在未压缩时取值相同,这也解释了为什么打包器敢干脆地把三个都填成 l2/4。</p>
+  <p>w0–w2 三个长度字段在未压缩时取值相同,这也解释了打包器为什么敢把三个都填成 l2/4。</p>
 
   <div class="box box-warn">
     <div class="box-title">警告 · 校验和是 XOR,"验算通过"曾经骗过我们</div>
@@ -317,7 +319,7 @@ T+30s    z7nano login:</code></pre>
 
 喂进去的是平铺二进制: DDR @ 0x04000000 开头 = U-Boot 第一条指令的机器码
                       → 正常执行,很快串口吐出横幅</code></pre>
-  <p>p1(FSBL 自己)同理也是平铺二进制,不是 ELF。这个知识点是第 3 章"放弃 mkbootimage、自写打包器"的直接伏笔。</p>
+  <p>p1(FSBL 自己)同理也是平铺二进制,不是 ELF。这个知识点是<a href="ch3-toolchain.html">第 3 章</a>"放弃 mkbootimage、自写打包器"的直接伏笔。</p>
 
   <div class="box box-know">
     <div class="box-title">五个常见追问</div>
@@ -350,7 +352,7 @@ for (PartitionNum = 1; ...; PartitionNum++) {
       <li>跳转 dest_exec。任何一步失败则 <code>FsblFallback()</code>:0x5364 处 <code>b 5364</code> 就地自旋。</li>
     </ol>
   </div>
-  <p>第 2 步的"跳过"值得多看一眼:FSBL 不加载第 0 个分区,因为它<strong>自己就是</strong>第 0 个分区——BootROM 早已把它搬进 OCM 并正在运行,再搬一遍毫无意义。数数的时候才要算上它(GetPartitionCount 数的是全部槽位)。</p>
+  <p>第 2 步的"跳过"值得多看一眼:FSBL 不加载第 0 个分区,因为它<strong>自己就是</strong>第 0 个分区——BootROM 早已把它搬进 OCM 并正在运行,再搬一遍毫无意义。数分区的时候才要算上它(GetPartitionCount 数的是全部槽位)。</p>
   <p>第 3 步的三项检查里,长度上限 ImageWordLen ≤ 0x40000000(单位:字,折合 4GiB 字节)是一道防野指针的合理性闸门——配合 w15 校验和,一个分区头必须"非空、自洽、不离谱"才算过关。</p>
   <p>再往上退一步看两级读者的分工:BootROM 只读 ROM 头(知道 FSBL 多长、搬多少),FSBL 读镜像头和分区头(知道还有谁、搬到哪)。两级各自要验的头部不同,这就是 BOOT.BIN 里头部要做成"三件套"的深层原因。</p>
   <p>我们的打包器 make-bootbin.py 正是这五步的"逆运算",关键常量与上面的格式一一对应(注释引用脚本原文):</p>
@@ -396,7 +398,7 @@ w=struct.unpack("&lt;16I", d[0xCC0:0xCE0]); \
 print((sum(w[:15]) &amp; 0xFFFFFFFF) ^ 0xFFFFFFFF == w[15])'
 <span class="c"># 期望输出:True</span></code></pre>
     <p>跑出 True,你就握住了比任何文档都硬的一手证据——FSBL 在真机上验的就是这个式子。</p>
-    <p><strong>第五步(可选,留到第 5 章做出自制 BOOT.BIN 后再回来做):找结束标记。</strong>对自制的两分区 BOOT.BIN,p3 槽位在 0xC80 + 2×0x40 = 0xD00:</p>
+    <p><strong>第五步(可选,留到<a href="ch5-sdcard.html">第 5 章</a>做出自制 BOOT.BIN 后再回来做):找结束标记。</strong>对自制的两分区 BOOT.BIN,p3 槽位在 0xC80 + 2×0x40 = 0xD00:</p>
     <pre><code>python3 -c 'import struct; d=open("BOOT.BIN","rb").read(); \
 e=struct.unpack("&lt;16I", d[0xD00:0xD40]); \
 print(all(x==0 for x in e[:15]) and e[15]==0xFFFFFFFF)'
@@ -404,8 +406,8 @@ print(all(x==0 for x in e[:15]) and e[15]==0xFFFFFFFF)'
     <p><strong>第六步(挑战):交叉验证长度字段。</strong>取 p2 分区头的 w2 乘 4 得到载荷字节数,再用"文件里 p2 数据起点 + 该字节数"与下一个分区(或文件尾)对照——三个长度字段与数据区彼此咬合,格式才算真正读懂。</p>
   </div>
   <p>顺带一提,仓库 code/ 目录里的 make-bootbin.py 自带"解剖器"性质的 assert 自检(打包完当场重读、重验校验和与结束标记),思路与上面六步同源:产出一个二进制,就要能亲手证明它对。</p>
-  <p>解剖的手感,和读一百遍格式表是完全不同的东西——现在就去开一枪。</p>
-  <p>开完枪,就来接受五问验收。</p>
+  <p>解剖的手感,和读一百遍格式表是完全不同的东西——现在就去开一次膛。</p>
+  <p>开完膛,就来接受五问验收。</p>
 
   <h3>2.5 读到这里,你应当能回答</h3>
   <p>先别往下翻。以下五问若都能不假思索地答出,本章就到手了(参考答案在本页底部,不搞折叠,诚实列开)。建议拿张纸先写自己的版本,再对照——差别就是你的知识缺口。</p>
@@ -479,7 +481,7 @@ print(all(x==0 for x in e[:15]) and e[15]==0xFFFFFFFF)'
   </table>
   <p>数字不怕多,怕的是记错来源——本表第三列就是每个数的出处。</p>
   <h3>附三:本章概念在后续章节的用武之地</h3>
-  <p>本章不长这样"理论占一章"的亏:后面每一章都有它的回声。</p>
+  <p>"理论占一章"并不亏:后面每一章都有它的回声。</p>
   <table>
     <tr><th>本章概念</th><th>用在哪</th></tr>
     <tr><td>启动链分层 + 各级失败时的 PC</td><td>第 6 章 JTAG 排雷的整套方法论</td></tr>

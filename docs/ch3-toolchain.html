@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="一行 apt 装齐 17 个包的开源工具链,逐环节审讯哪些步骤真的需要 Vivado,并提炼工具产出的三重验证方法论。">
 <title>第 3 章 · 工具链与开源替代 — Zynq Z7-Nano 主线 Linux 实战手册</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
@@ -46,8 +47,8 @@
   <h3>3.1 一行 apt,整个工具箱到位</h3>
   <p>本项目的全部构建都在一台干净的 Ubuntu 24.04 上完成,没有一个字节来自 Xilinx 的安装包。</p>
   <p>为什么坚持全用 apt:版本由发行版统一锁定、装完即用、五年内随 LTS 一起维护——对"追求可复现"的移植项目,这比到处下载工具包省心得多。占用也不过 Vivado 的零头。</p>
-  <p>顺带一提,我们的工作机是 24 核 62GB 的台式机,-j24 全速编译很爽;机器老一些完全没关系,只是慢些——构建不挑机器,挑的是依赖装没装齐。以下操作全程不需要板子在场,可以先在任意一台 Ubuntu 上把环境备好。</p>
-  <p>第一步,把工具链和依赖一次装齐(一行命令,回头续行即用;一口气装齐比缺啥补啥愉快):</p>
+  <p>顺带一提,我们的工作机是 24 核 62GB 的台式机,-j24 全速编译很爽;机器老一些完全没关系,只是慢些——构建不挑机器,挑的是依赖装没装齐。环境也可以先在任意一台 Ubuntu 上备好,不必等板子到手。</p>
+  <p>第一步,把工具链和依赖一次装齐(一行命令,回头要用照抄即可;一口气装齐比缺啥补啥愉快):</p>
   <pre><code><span class="k">sudo apt install</span> gcc-arm-linux-gnueabihf device-tree-compiler bison flex bc \
   libssl-dev libgnutls28-dev swig python3-dev libncurses-dev u-boot-tools \
   debootstrap qemu-user-static libelf-dev p7zip-full openocd python3-serial</code></pre>
@@ -57,8 +58,8 @@ dtc --version                      <span class="c"># 设备树编译器</span>
 openocd --version                  <span class="c"># JTAG 服务器(第 6 章主角)</span>
 python3 -c 'import serial; print(serial.__version__)'   <span class="c"># pyserial</span></code></pre>
   <p>都出版本号就继续;哪个报 command not found,回去对照那行 apt 查漏补缺。</p>
-  <p>另外两个值得认识的存在感:qemu-user-static 装好后 binfmt 自动注册,armhf 的可执行文件在 x86 主机上可以<strong>直接 ./ 运行</strong>;p7zip-full 提供 7z 命令,厂商资料包全靠它开箱。</p>
-  <p>下面那个 hello 冒烟测试,顺带就把 binfmt 的注册情况也验了。小提醒:hello.c 记得 <code>#include &lt;stdio.h&gt;</code>,否则编译器的 implicit-declaration 警告会吓你一跳。</p>
+  <p>另外两个包也值得认识:qemu-user-static(静态链接的用户态模拟器)装好后,binfmt(内核的可执行格式注册机制)自动注册,armhf 的可执行文件在 x86 主机上可以<strong>直接 ./ 运行</strong>;p7zip-full 提供 7z 命令,厂商资料包全靠它开箱。</p>
+  <p>下面的 hello 冒烟测试,顺带就把 binfmt 的注册情况也验了。小提醒:hello.c 记得 <code>#include &lt;stdio.h&gt;</code>,否则编译器的 implicit-declaration 警告会吓你一跳。</p>
 
   <h4>逐包说明:谁在用它,用它干什么</h4>
   <p>装的时候不觉得,出问题回查的时候这张表很省事。按用途分四组:</p>
@@ -85,15 +86,15 @@ python3 -c 'import serial; print(serial.__version__)'   <span class="c"># pyseri
     <tr><td>libncurses-dev</td><td>终端 UI 库:make menuconfig 的界面就是它画的</td></tr>
     <tr><td>libelf-dev</td><td>libelf 头文件:内核 objtool / BTF 相关构建需要</td></tr>
   </table>
-  <p>这一组只为构建过程服务,产物一个都不会出现在目标机上。它们存在感最低(bc 大概是其中的隐身冠军),但缺一个,构建就会在中途某个意想不到的步骤报错。</p>
+  <p>这一组只为构建过程服务,产物一个都不会出现在目标机上——bc 大概是其中的隐身冠军,但谁缺席,构建都会在中途某个意想不到的步骤报错。</p>
 
   <p><strong>第三组:Debian rootfs 自举。</strong></p>
   <table>
     <tr><th>包</th><th>用途</th></tr>
-    <tr><td>debootstrap</td><td>Debian 官方的 rootfs 自举工具,<code>--foreign</code> 半程模式把基础系统拉下来(第 4 章)</td></tr>
+    <tr><td>debootstrap</td><td>Debian 官方的 rootfs 自举工具,<code>--foreign</code> 半程模式把基础系统拉下来(<a href="ch4-build.html">第 4 章</a>)</td></tr>
     <tr><td>qemu-user-static</td><td>用户态模拟器(静态链接版)+ binfmt:在 x86 主机上 chroot 进 armhf rootfs 跑第二阶段,"没有这块板子也能把 Debian 装完"</td></tr>
   </table>
-  <p>这一组的意义:rootfs 的整个制作过程都不需要板子在场——第 4 章的 debootstrap 双阶段流程全靠它们。</p>
+  <p>这一组的意义:rootfs 的整个制作过程都不需要板子在场——<a href="ch4-build.html">第 4 章</a>的 debootstrap 双阶段流程全靠它们。</p>
 
   <p><strong>第四组:硬件侧工具。</strong></p>
   <table>
@@ -137,9 +138,9 @@ file hello                                        <span class="c"># 确认:ARM, 
   <div class="box box-know">
     <div class="box-title">知识 · 读懂 arm-linux-gnueabihf- 这个前缀</div>
     <p>交叉工具链的每个工具都戴着同一顶帽子:<code>arm-linux-gnueabihf-gcc</code>、<code>arm-linux-gnueabihf-nm</code>……这个三元组读作"架构-内核-ABI":目标是 ARM、跑 Linux、GNU EABI 且硬浮点(hf,hard-float)。</p>
-    <p>第 4 章构建命令里的 <code>CROSS_COMPILE=arm-linux-gnueabihf-</code>,作用就是告诉 Makefile"给所有宿主机工具名前面加这串前缀再去调用"。Cortex-A9 有硬件浮点单元,选 hf 三元组是对的。</p>
+    <p><a href="ch4-build.html">第 4 章</a>构建命令里的 <code>CROSS_COMPILE=arm-linux-gnueabihf-</code>,作用就是告诉 Makefile"给所有宿主机工具名前面加这串前缀再去调用"。Cortex-A9 有硬件浮点单元,选 hf 三元组是对的。</p>
     <p><strong>那为什么 FSBL 用的是另一把扳手 arm-none-eabi?</strong>none 意为"无操作系统":FSBL 是裸机程序,没有 Linux 可依赖;而内核和 U-Boot 是跑在(或自举出)Linux 环境的程序。两套三元组,两种世界,别拿错。</p>
-    <p>好在它们完全可以在一台机器上共存,互不干扰。顺带认识第 6 章会用到的两个同族工具:<code>arm-linux-gnueabihf-nm</code>(列符号表,按地址排序可定位 PC 落在哪个函数)和 <code>arm-linux-gnueabihf-objdump</code>(反汇编)。</p>
+    <p>好在它们完全可以在一台机器上共存,互不干扰。顺带认识<a href="ch6-debug.html">第 6 章</a>会用到的两个同族工具:<code>arm-linux-gnueabihf-nm</code>(列符号表,按地址排序可定位 PC 落在哪个函数)和 <code>arm-linux-gnueabihf-objdump</code>(反汇编)。</p>
   </div>
 
   <div class="box box-know">
@@ -175,7 +176,7 @@ file hello                                        <span class="c"># 确认:ARM, 
     <li><strong>Vivado 在这里干什么</strong>:什么都不干——它对这三个构建零参与、零加速;</li>
     <li><strong>替代方案</strong>:3.1 节那行 apt,就是全部。</li>
   </ul>
-  <p>这一环节是六行里最"送分"的,也是新手最容易被吓住的一行——吓住人的不是事实,是"Xilinx 板子"这五个字的光环。</p>
+  <p>这一环节是六行里最"送分"的,也是新手最容易被吓住的一行——吓住人的不是事实,是"Xilinx 板子"这块招牌的光环。</p>
 
   <h4>环节二:BOOT.BIN 打包 —— 不需要,bootgen 的活我们自己干</h4>
   <ul>
@@ -196,7 +197,7 @@ file hello                                        <span class="c"># 确认:ARM, 
   <p>从 hdf 生成 zynq_fsbl.elf 的工具(xsdk / xsct 家族)确实属于 Xilinx 软件栈。但请注意"生成"和"拥有"的区别:</p>
   <ul>
     <li><strong>最省事</strong>:直接复用厂商现成的 zynq_fsbl.elf——它对这块板是"已知好"的(本项目就是这么干的);</li>
-    <li><strong>想改它</strong>(比如打开 FSBL_DEBUG_INFO 让启动开口说话):FSBL 源码开源(embeddedsw 的 lib/sw_apps/zynq_fsbl/,我们用 xilinx-v2018.3 tag),用 arm-none-eabi 裸机工具链手工编译即可,这是第 8 章路线图第一项;</li>
+    <li><strong>想改它</strong>(比如打开 FSBL_DEBUG_INFO 让启动开口说话):FSBL 源码开源(embeddedsw 的 lib/sw_apps/zynq_fsbl/,我们用 xilinx-v2018.3 tag),用 arm-none-eabi 裸机工具链手工编译即可,这是<a href="ch8-roadmap.html">第 8 章</a>路线图第一项;</li>
     <li><strong>自担的风险去哪了</strong>:自编 FSBL 的一切板级参数来自厂商 hdf,而厂商 ELF 本身也出自同一套参数——殊途同归,复用现成的是风险更小的那条路。</li>
   </ul>
   <p>这条路线的实际成本低到感人:从厂商 7z 资料包里拷出一个文件,放进模板,就完事了。</p>
@@ -207,7 +208,7 @@ file hello                                        <span class="c"># 确认:ARM, 
     <li><strong>为什么没有替代</strong>:开源工具(Yosys / nextpnr)不支持 Zynq-7000 SoC 的完整流程,拼不出一条能用的链;</li>
     <li><strong>缓解</strong>:免费版 Vivado ML Standard 就完整支持 XC7Z020,不用买授权。</li>
   </ul>
-  <p>结论前置:你的目标是学 Linux,这个需求可以推迟到真想开垦 PL 的那一天再满足。XC7Z020 的 PL 是 Artix-7 级(第 1 章),值不值得装,取决于你想拿这片逻辑做什么。</p>
+  <p>结论前置:你的目标是学 Linux,这个需求可以推迟到真想开垦 PL 的那一天再满足。XC7Z020 的 PL 是 Artix-7 级(<a href="ch1-board.html">第 1 章</a>),值不值得装,取决于你想拿这片逻辑做什么。</p>
 
   <h4>环节五:JTAG 调试 —— 不需要,OpenOCD 全包</h4>
   <ul>
@@ -244,7 +245,7 @@ file hello                                        <span class="c"># 确认:ARM, 
   <h3>3.3 Antmicro mkbootimage 的教训:工具产出必须三重验证</h3>
   <p>这一节是全书少有的"失败专列"——讲透了它,你对"工具"这个词的理解会上一个台阶。</p>
   <p>社区最常被推荐的开源 BOOT.BIN 打包器,是 Antmicro 的 zynq-mkbootimage(github.com/antmicro/zynq-mkbootimage)。我们最初也用它——失败案例的输入文件 failed-bootgen-mkbootimage.bif 至今存档在仓库 code/ 目录,作为纪念碑。</p>
-  <p>它产出的镜像被 <strong>BootROM 直接拒收</strong>:JTAG 实测 PC 停在 ROM 错误循环 0xFFFFFF34(第 2 章数字卡片里那个数),两个核都出不来。</p>
+  <p>它产出的镜像被 <strong>BootROM 直接拒收</strong>:JTAG 实测 PC 停在 ROM 错误循环 0xFFFFFF34(<a href="ch2-bootchain.html">第 2 章</a>数字卡片里那个数),两个核都出不来。</p>
   <p>把那晚的遭遇浓缩成时间线,每行都是真实发生的事:</p>
   <pre><code>满心欢喜:mkbootimage 打包 → 烧卡 → 上电
 症状:串口全静默
@@ -267,7 +268,7 @@ JTAG 读 PC:两核都停在 0xFFFFFF34 → BootROM 就地拒绝,FSBL 根本没�
     </ol>
     <p>三道关卡,一道都不能省:第一道抓"结构不对",第二道抓"字段错误",第三道抓前两道都发现不了的语义问题。</p>
     <p>为什么说真机是唯一真理:前两道关卡都还在"你理解的格式"里打转,只有真机能证明"芯片理解的格式"与你理解的一致。</p>
-    <p>顺便认亲:第 2 章 2.4 节的"解剖六步",就是第二道关卡的手动教学版——三重验证不是新发明,是那晚之后被正式命名的方法。</p>
+    <p>顺便认亲:<a href="ch2-bootchain.html">第 2 章</a> 2.4 节的"解剖六步",就是第二道关卡的手动教学版——三重验证不是新发明,是那晚之后被正式命名的方法。</p>
   </div>
 
   <div class="box box-warn">

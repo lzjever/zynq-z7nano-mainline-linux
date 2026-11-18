@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>第 8 章 · 路线图与附录 — Zynq Z7-Nano 主线 Linux 实战手册</title>
+<meta name="description" content="六个进阶方向:MAC 钉死、JTAG 启动、PYNQ、响亮 FSBL、QSPI、PL 开垦,附代码索引与关键数字速查。">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
@@ -33,7 +34,7 @@
 
   <h3>8.1 进阶路线图:接下来玩什么</h3>
   <p>板子现在跑着主线 U-Boot + Linux 6.18 + Debian 13,SD 卡启动、ssh 可达——这就是传说中的"能用"状态。往下怎么走?这里给出六个方向,每个都标注<strong>做什么、学什么、难度</strong>,先上一张总览,再逐个展开:</p>
-  <p>难度怎么读?主要看三件事:要不要写裸机代码(FSBL)、要不要装新工具链、出错时好不好回退。同一个方向,把第 6 章灌注救援亲手做过一遍的你和没做过的你,体感难度完全不同。</p>
+  <p>难度怎么读?主要看三件事:要不要写裸机代码(FSBL)、要不要装新工具链、出错时好不好回退。同一个方向,把<a href="ch6-debug.html">第 06 章</a>灌注救援亲手做过一遍的你和没做过的你,体感难度完全不同。</p>
   <table>
     <tr><th>#</th><th>方向</th><th>难度</th><th>一句话</th></tr>
     <tr><td>一</td><td><a href="#d1">给 end0 钉死 MAC 地址</a></td><td>入门</td><td>半小时让板子每次以同一身份上线</td></tr>
@@ -47,18 +48,18 @@
   <h4 id="d1">方向一:给 end0 钉死 MAC 地址(难度:入门)</h4>
   <ul>
     <li><strong>做什么</strong>:写一个 systemd 的 <code>.link</code> 文件,给 end0 固定 MACAddress——文件放 <code>/etc/systemd/network/</code> 下,Match 段按 <code>Name=end0</code> 匹配,Link 段写死 MACAddress,机制细节 <code>man systemd.link</code> 讲得最全;</li>
-    <li><strong>学什么</strong>:systemd-udevd 的 .link 匹配机制——顺带给"网卡为什么叫 end0 不叫 eth0"这个第 07 章的老朋友一个正式收尾;</li>
+    <li><strong>学什么</strong>:systemd-udevd 的 .link 匹配机制——顺带给"网卡为什么叫 end0 不叫 eth0"这个<a href="ch7-pitfalls.html">第 07 章</a>的老朋友一个正式收尾;</li>
     <li><strong>为什么值得</strong>:MAC 钉死之后,板子每次上电都以同一个身份出现,交换机、DHCP、IP 白名单从此都省心。半小时的活,性价比极高;</li>
     <li><strong>什么算做成</strong>:重启几次,<code>ip link</code> 里 end0 的 link/ether 始终是同一个地址。</li>
   </ul>
 
   <h4 id="d2">方向二:JTAG 启动模式(难度:入门)</h4>
   <ul>
-    <li><strong>做什么</strong>:跳线切到 JTAG 档,把第 06 章的 OpenOCD 灌注流程直接用作日常启动/救援手段——配置文件就是仓库里的 <code>openocd-z7nano.cfg</code>;</li>
+    <li><strong>做什么</strong>:跳线切到 JTAG 档,把<a href="ch6-debug.html">第 06 章</a>的 OpenOCD 灌注流程直接用作日常启动/救援手段——配置文件就是仓库里的 <code>openocd-z7nano.cfg</code>;</li>
     <li><strong>学什么</strong>:JTAG 启动的完整姿势——BootROM 在 JTAG 档会空等主机指令,天生就是给调试准备的;</li>
     <li><strong>为什么值得</strong>(几乎)零成本:硬件天然支持,第 06 章的功夫直接复用。SD 卡刷坏了、BOOT.BIN 写坏了,它就是你的救命通道;Vivado 的 hw manager / xsct 也能干这活,但我们继续用开源工具;</li>
     <li><strong>什么算做成</strong>:SD 卡完全拔掉,靠 load_image 灌 FSBL + U-Boot,串口照常出现 U-Boot 横幅;</li>
-    <li><strong>相关章节</strong>:第 06 章(JTAG 方法论与灌注命令)。</li>
+    <li><strong>相关章节</strong>:<a href="ch6-debug.html">第 06 章</a>(JTAG 方法论与灌注命令)。</li>
   </ul>
 
   <h4 id="d3">方向三:PYNQ 镜像尝鲜(难度:入门)</h4>
@@ -71,11 +72,11 @@
 
   <h4 id="d4">方向四:响亮 FSBL——让启动过程开口说话(难度:中等)</h4>
   <ul>
-    <li><strong>做什么</strong>:取 Xilinx embeddedsw(xilinx-v2018.3 tag)的 FSBL 源码 + 厂商 hdf 里解出的 ps7_init.c,打开 FSBL_DEBUG_INFO 编译开关,用 arm-none-eabi 裸机工具链手工重编一个"话痨版" FSBL;</li>
-    <li><strong>学什么</strong>:FSBL 内部流程(第 02 章的理论在这里落地)、debug 开关的编译机制、ps7_init 寄存器参数与板级硬件的对应关系;</li>
-    <li><strong>为什么值得</strong>:厂商的 FSBL 是"哑巴版"(debug 打印被编译关闭),串口全程静默——第 06 章深夜排雷的一半痛苦都源于此。换了响亮版,启动卡在哪一步直接打印在串口上,所有静默故障无处遁形。这也是理解 Zynq 启动机制最深的一条路;</li>
+    <li><strong>做什么</strong>:取 Xilinx embeddedsw(xilinx-v2018.3 tag)的 FSBL 源码 + 厂商 hdf 里解出的 ps7_init.c,打开 FSBL_DEBUG_INFO 编译开关,用 arm-none-eabi 裸机工具链手工重编一个"话痨版" FSBL(前置:需先 apt 安装 <code>gcc-arm-none-eabi</code>——裸机工具链,与主线的 gnueabihf 是两把扳手);</li>
+    <li><strong>学什么</strong>:FSBL 内部流程(<a href="ch2-bootchain.html">第 02 章</a>的理论在这里落地)、debug 开关的编译机制、ps7_init 寄存器参数与板级硬件的对应关系;</li>
+    <li><strong>为什么值得</strong>:厂商的 FSBL 是"哑巴版"(debug 打印被编译关闭),串口全程静默——<a href="ch6-debug.html">第 06 章</a>深夜排雷的一半痛苦都源于此。换了响亮版,启动卡在哪一步直接打印在串口上,所有静默故障无处遁形。这也是理解 Zynq 启动机制最深的一条路;</li>
     <li><strong>什么算做成</strong>:上电后串口第一屏就有 FSBL 的版本号与分区加载打印;</li>
-    <li><strong>相关章节</strong>:第 02 章(FSBL 职责与 image_mover 流程)、第 06 章(它替你省掉的排雷功夫)。</li>
+    <li><strong>相关章节</strong>:<a href="ch2-bootchain.html">第 02 章</a>(FSBL 职责与 image_mover 流程)、<a href="ch6-debug.html">第 06 章</a>(它替你省掉的排雷功夫)。</li>
   </ul>
 
   <h4 id="d5">方向五:QSPI 启动(难度:中等偏上)</h4>
@@ -238,8 +239,8 @@
   <h3>8.7 结语:从这里出发</h3>
   <p>到这里,你已经(或者即将)完整走过一次 Zynq 主线移植。整个移植收敛成六步,贴在这里作最后一眼回顾:</p>
   <ol>
-    <li>apt 装交叉工具链与依赖(第 03 章);</li>
-    <li>编三件套:主线 U-Boot、Linux 6.18 内核、Debian 13 rootfs(第 04 章);</li>
+    <li>apt 装交叉工具链与依赖(<a href="ch3-toolchain.html">第 03 章</a>);</li>
+    <li>编三件套:主线 U-Boot、Linux 6.18 内核、Debian 13 rootfs(<a href="ch4-build.html">第 04 章</a>);</li>
     <li><code>python3 code/make-bootbin.py</code> 生成 BOOT.BIN(厂商模板 + u-boot-dtb.bin);</li>
     <li><code>sudo code/make-sd.sh /dev/sdX BOOT.BIN</code> 制卡;</li>
     <li>插卡、跳线 SD、上电——静默约 3 秒(FSBL)后 U-Boot 横幅,经 extlinux 进内核,到 <strong>z7nano login:</strong> 约 30 秒;</li>

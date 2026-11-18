@@ -1,6 +1,6 @@
 # 许可
 
-- **文档与网站**(site/ 目录及全部 .md):[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+- **文档与网站**(docs/ 目录及全部 .md):[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 - **代码**(code/ 目录):MIT License
 
 ```

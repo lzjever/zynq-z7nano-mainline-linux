@@ -244,7 +244,7 @@
   <ol>
     <li><code>mdw 0xF800025C</code> 确认跳线是不是 SD 档——不是 5 就先去掰跳线,别的都不用看;</li>
     <li>跳线没问题,嫌疑就集中在 BOOT.BIN 本身:ROM 头(魔术字 <code>0xAA995566</code> @0x20)或分区头被拒收;</li>
-    <li>下一步是逐字节对照厂商 BOOT.BIN 的头部找差异(第 4 章的三重验收法)。
+    <li>下一步是逐字节对照厂商 BOOT.BIN 的头部找差异(第 3 章 3.3 的三重验收法)。
         antmicro mkbootimage 的输出就死在这里(第 7 章坑 10(原 #9))。</li>
   </ol>
   <h4>PC = 0x5364:FSBL 的 fallback 自旋</h4>

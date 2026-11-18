@@ -314,7 +314,7 @@ FFFFFFFF
   </p>
   <pre><code><span class="c"># 候选 A:逐字求和后异或取反</span>
 checksum = sum(w0..w14) XOR 0xFFFFFFFF
-<span class="c"># 候选 B:求和后取补——两者对厂商样本恰好同值!</span>
+<span class="c"># 候选 B:求和后按位取反——两者对厂商样本恰好同值!</span>
 checksum = 0xFFFFFFFF - sum(w0..w14)</code></pre>
   <p>
     拿厂商 BOOT.BIN 验证,两个公式给出<strong>同一个结果</strong>,无法区分;
@@ -459,7 +459,7 @@ checksum = 0xFFFFFFFF - sum(w0..w14)</code></pre>
     <li><strong>工具的产出要三重验收。</strong>
       自制 BOOT.BIN 要过三关:逐字节对照已知好样本(厂商 BOOT.BIN)+
       解剖器验证(<code>exbootimage -d</code>)+ 真机 JTAG 验收
-      (坑 10 / 11 / 12 的总教训,也是第 4 章的既定流程)。
+      (坑 10 / 11 / 12 的总教训,也是第 3 章 3.3 的既定流程)。
       任何一关缺失,坏镜像就会溜到下一个环节才爆——
       而那时,症状已经离病因很远,排查成本翻着倍涨。
       三关的成本是几分钟,漏一关的代价是一晚上。</li>

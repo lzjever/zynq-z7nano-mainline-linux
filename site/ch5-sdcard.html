@@ -43,7 +43,7 @@
 │                             │                                      │
 │  BOOT.BIN     ← ROM+FSBL+U-Boot(5.3 节生成)                     │
 │  zImage                     │  一整棵 Debian 13(第 4.4 节 rootfs) │
-│  zynq-z7-nano.dtb           │  其中 /lib/modules/$KVER/ 是模块树(版本号以你为准,见第 4 章)  │
+│  zynq-z7-nano.dtb           │  其中 /lib/modules/6.18.0/ 是模块树(版本号以你的构建为准,见第 4 章)  │
 │  extlinux/extlinux.conf     │                                      │
 └─────────────────────────────┴──────────────────────────────────────┘
 </code></pre>
@@ -81,21 +81,21 @@
   <p>四个文件正好对应启动链的接力棒,谁接哪一棒:</p>
   <table>
     <tr><th>文件</th><th>接力棒交给谁</th></tr>
-    <tr><td>BOOT.BIN</td><td>BootROM 裸读 → FSBL(初始化硬件)→ U-Boot 起跑</td></tr>
+    <tr><td>BOOT.BIN</td><td>BootROM 读入 → FSBL(初始化硬件)→ U-Boot 起跑</td></tr>
     <tr><td>extlinux.conf</td><td>U-Boot 的 distro boot 按它决定加载什么</td></tr>
     <tr><td>zImage + dtb</td><td>U-Boot 装进 DDR 后跳转,交给 Linux 内核</td></tr>
     <tr><td>(p2 的 rootfs)</td><td>内核挂载,systemd 接最后一棒</td></tr>
   </table>
 
   <h3>5.3 生成 BOOT.BIN:make-bootbin.py</h3>
-  <div class="box box-step"><div class="box-title">步骤 · 先备齐厂商物料</div><p>打包器需要一件输入:<strong>厂商原厂 BOOT.BIN</strong>(当模板)。两个来源任选其一:</p>
+  <div class="box box-step"><div class="box-title">步骤 · 先备齐厂商物料</div><p>打包器需要一件输入:<strong>厂商原厂 BOOT.BIN</strong>(当模板)。来源(出厂 SD 卡;或厂商资料包"开箱测试 images"目录里通常有同款),另有一批补充物料建议一并备齐:</p>
 <ol><li><strong>出厂 SD 卡</strong>:插到读卡器,拷出来,顺手做个全卡备份更保险:
 <pre><code>mkdir -p ~/zynq-mainline/vendor
 cp /media/$USER/*/BOOT.BIN ~/zynq-mainline/vendor/   <span class="c"># 挂载路径以实际为准</span>
 <span class="c"># 可选的保险:整卡镜像备份(约 10 分钟)</span>
 <span class="c"># sudo dd if=/dev/sdX of=~/factory-sd.img bs=4M status=progress</span></code></pre></li>
-<li><strong>厂商资料包</strong>(向板卡厂商/客服索取;本项目为 Z7-NanoR20-7020-2018.3 系列):其 demo 压缩包里还有现成的 zynq_fsbl.elf 与 hdf(第 6、8 章要用),一并解到 vendor/ 备用:
-<pre><code>7z e 厂商资料包.7z -o~/zynq-mainline/vendor "*zynq_fsbl.elf" "*.hdf"</code></pre></li></ol></div>
+<li><strong>补充物料</strong>(来源 1 拿不到、或第 6/8 章需要时):厂商资料包(向板卡厂商/客服索取;本项目为 Z7-NanoR20-7020-2018.3 系列)demo 压缩包里有现成的 zynq_fsbl.elf 与 hdf,解到 vendor/ 备用(注意 -o 后用 $HOME 而非 ~,波浪号在参数里不展开):
+<pre><code>7z e 厂商资料包.7z -o$HOME/zynq-mainline/vendor "*zynq_fsbl.elf" "*.hdf"</code></pre></li></ol></div>
   <p>还记得第 2 章的 BOOT.BIN 布局吗?ROM 头 + 镜像头 + 分区头表 + FSBL 数据,后面才是 U-Boot 分区。我们的策略是<strong>模板复用法</strong>:拿厂商出厂 SD 卡里的 BOOT.BIN,截取前 0x19740 字节充当模板(ROM 头、镜像头、FSBL 分区连同里面的 ps7_init 板级参数,原封不动——FSBL 携带每板不同的硬件参数,能复用就不重编,道理见第 2 章),只把第二分区换成自己编的 u-boot-dtb.bin:</p>
 <pre><code>cd ~/zynq-mainline
 python3 手册仓库路径/code/make-bootbin.py \
@@ -122,7 +122,7 @@ python3 手册仓库路径/code/make-bootbin.py \
   <p>生成的 BOOT.BIN 直接落在了 sd/boot/ 里(5.2 节的目录就此凑齐);厂商模板建议留个只读副本,以后重打包还要用:</p>
 <pre><code>cp vendor/BOOT.BIN vendor/BOOT.BIN.orig    <span class="c"># 模板留底,永远有退路</span></code></pre>
   <h3>5.4 extlinux.conf:四行启动菜单</h3>
-  <p>U-Boot 的 distro boot 约定:到各启动介质上找 <code>/extlinux/extlinux.conf</code>。这个文件就是内核启动菜单,我们这份全文只有四行。注意路径和文件名是约定死的,一个字母都不能错(boot.bin 大小写不敏感,但文件名与所在目录一个字母都不能错):</p>
+  <p>U-Boot 的 distro boot 约定:到各启动介质上找 <code>/extlinux/extlinux.conf</code>。这个文件就是内核启动菜单,我们这份全文只有四行。注意路径和文件名是约定死的,一个字母都不能错(路径与文件名按约定原样书写;顺带一提,BOOT.BIN 的大小写不敏感是 BootROM 的特性,这里没有这层宽松):</p>
 <pre><code>mkdir -p ~/zynq-mainline/sd/boot/extlinux
 cat &gt; ~/zynq-mainline/sd/boot/extlinux/extlinux.conf &lt;&lt;'EOF'
 <span class="k">label</span> Debian trixie (mainline 6.18) — Z7-Nano

@@ -1,0 +1,150 @@
+/* Zynq Z7-Nano 主线 Linux 手册 — 全站样式(零外部依赖) */
+:root {
+  --ink: #1a2332;
+  --ink-soft: #4a5568;
+  --paper: #fdfcfa;
+  --panel: #f4f1ec;
+  --line: #e2ddd4;
+  --accent: #b3541e;        /* 铜色 — FPGA 之魂 */
+  --accent-deep: #7c3a12;
+  --code-bg: #1e2430;
+  --code-ink: #dce3ee;
+  --ok: #2e7d32;
+  --warn: #b3541e;
+  --know: #1d5c8a;
+  --step: #5b3e96;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+  line-height: 1.75;
+  font-size: 16px;
+}
+a { color: var(--accent-deep); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ---------- 侧边栏 ---------- */
+.sidebar {
+  position: fixed; top: 0; left: 0; bottom: 0; width: 264px;
+  background: #20262f; color: #cfd6df; padding: 24px 0;
+  overflow-y: auto;
+}
+.sidebar .brand {
+  padding: 0 20px 18px; border-bottom: 1px solid #343c47; margin-bottom: 14px;
+}
+.sidebar .brand .chip {
+  display: inline-block; font-size: 11px; letter-spacing: 2px;
+  color: var(--accent); border: 1px solid var(--accent);
+  padding: 2px 8px; border-radius: 3px; margin-bottom: 8px;
+}
+.sidebar .brand h1 { font-size: 17px; color: #fff; margin: 6px 0 2px; }
+.sidebar .brand p { font-size: 12px; color: #8b95a3; margin: 0; }
+.sidebar nav a {
+  display: block; padding: 8px 20px; color: #aeb7c2; font-size: 14px;
+  border-left: 3px solid transparent;
+}
+.sidebar nav a:hover { color: #fff; background: #2a323d; text-decoration: none; }
+.sidebar nav a.active {
+  color: #fff; background: #2a323d; border-left-color: var(--accent);
+}
+.sidebar nav a .num { color: var(--accent); font-size: 12px; margin-right: 6px; }
+.sidebar footer {
+  margin-top: 20px; padding: 14px 20px 0; border-top: 1px solid #343c47;
+  font-size: 11.5px; color: #6b7480; line-height: 1.6;
+}
+
+/* ---------- 正文 ---------- */
+.main { margin-left: 264px; padding: 48px 56px 96px; max-width: 1010px; }
+.chapter-tag {
+  color: var(--accent); font-weight: 600; font-size: 13px; letter-spacing: 3px;
+}
+h2.title { font-size: 34px; margin: 6px 0 8px; line-height: 1.25; }
+.subtitle { color: var(--ink-soft); font-size: 16.5px; margin: 0 0 34px; }
+h3 { font-size: 22px; margin: 44px 0 12px; padding-top: 18px; border-top: 2px solid var(--line); }
+h3:first-of-type { border-top: none; padding-top: 0; }
+h4 { font-size: 17px; margin: 28px 0 8px; color: var(--accent-deep); }
+p { margin: 10px 0 16px; }
+ul, ol { padding-left: 26px; }
+li { margin: 6px 0; }
+strong { color: var(--ink); }
+hr { border: none; border-top: 1px dashed var(--line); margin: 36px 0; }
+
+/* ---------- 代码块 ---------- */
+pre {
+  background: var(--code-bg); color: var(--code-ink);
+  padding: 18px 20px; border-radius: 8px; overflow-x: auto;
+  font-size: 13.5px; line-height: 1.65; margin: 14px 0 20px;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, "Courier New", monospace;
+}
+pre code { background: none; padding: 0; color: inherit; }
+code {
+  background: #ece7df; color: #93370f; padding: 1px 6px; border-radius: 4px;
+  font-size: 0.9em;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+}
+pre .c { color: #7a8794; }        /* 注释 */
+pre .k { color: #e8a06b; }        /* 关键字/命令 */
+pre .s { color: #a8c98a; }        /* 字符串 */
+
+/* ---------- 知识框体系 ---------- */
+.box {
+  border-radius: 8px; padding: 16px 20px; margin: 18px 0;
+  border-left: 4px solid; background: var(--panel);
+}
+.box .box-title { font-weight: 700; font-size: 14px; letter-spacing: 1px; margin-bottom: 6px; }
+.box p:last-child, .box ul:last-child, .box ol:last-child { margin-bottom: 0; }
+.box-know  { border-color: var(--know); }
+.box-know .box-title { color: var(--know); }
+.box-warn  { border-color: var(--warn); background: #faf1e8; }
+.box-warn .box-title { color: var(--warn); }
+.box-step  { border-color: var(--step); background: #f3eff9; }
+.box-step .box-title { color: var(--step); }
+.box-win   { border-color: var(--ok); background: #eef6ee; }
+.box-win .box-title { color: var(--ok); }
+
+/* ---------- 表格 ---------- */
+table { border-collapse: collapse; width: 100%; margin: 16px 0 22px; font-size: 14.5px; }
+th { background: var(--panel); text-align: left; }
+th, td { border: 1px solid var(--line); padding: 9px 13px; vertical-align: top; }
+tr:nth-child(even) td { background: #faf8f4; }
+
+/* ---------- 流程图(纯 CSS) ---------- */
+.flow { margin: 20px 0; padding: 4px 0; }
+.flow .node {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+  padding: 10px 16px; margin: 0 0 6px; font-size: 14.5px;
+}
+.flow .node b { color: var(--accent-deep); }
+.flow .arrow { text-align: center; color: var(--accent); font-size: 18px; margin: -2px 0 4px; }
+
+/* ---------- 首页 ---------- */
+.hero {
+  background: linear-gradient(135deg, #20262f 0%, #2c3542 70%);
+  color: #fff; border-radius: 12px; padding: 42px 44px; margin-bottom: 36px;
+}
+.hero h2 { font-size: 30px; margin: 0 0 10px; color: #fff; }
+.hero p { color: #c3cbd6; margin: 8px 0; max-width: 720px; }
+.hero .stat-row { display: flex; gap: 14px; margin-top: 22px; flex-wrap: wrap; }
+.hero .stat {
+  background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.14);
+  border-radius: 8px; padding: 10px 18px; font-size: 13.5px; color: #dfe5ec;
+}
+.hero .stat b { color: #f0b27d; font-size: 16px; }
+
+/* ---------- 其他 ---------- */
+.pager { display: flex; justify-content: space-between; margin-top: 56px; padding-top: 20px; border-top: 2px solid var(--line); }
+.pager a { font-size: 14.5px; }
+.toc { columns: 2; font-size: 15px; }
+@media (max-width: 1100px) {
+  .sidebar { position: static; width: auto; }
+  .main { margin-left: 0; padding: 28px 22px 60px; }
+  .toc { columns: 1; }
+}
+@media print {
+  .sidebar, .pager { display: none; }
+  .main { margin: 0; }
+}

@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 7 章 · 踩坑大全 — Zynq Z7-Nano 主线 Linux 实战手册</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand">
+    <span class="chip">ZYNQ · MAINLINE</span>
+    <h1>Z7-Nano 主线 Linux</h1>
+    <p>从开箱到自主启动的完整实战</p>
+  </div>
+  <nav>
+    <a href="index.html"><span class="num">00</span>封面 · 如何使用本手册</a>
+    <a href="ch1-board.html"><span class="num">01</span>硬件档案与开箱</a>
+    <a href="ch2-bootchain.html"><span class="num">02</span>启动链与 BOOT.BIN 格式</a>
+    <a href="ch3-toolchain.html"><span class="num">03</span>工具链与开源替代</a>
+    <a href="ch4-build.html"><span class="num">04</span>构建三件套</a>
+    <a href="ch5-sdcard.html"><span class="num">05</span>制卡与首次启动</a>
+    <a href="ch6-debug.html"><span class="num">06</span>JTAG 调试方法论</a>
+    <a href="ch7-pitfalls.html" class="active"><span class="num">07</span>踩坑大全</a>
+    <a href="ch8-roadmap.html"><span class="num">08</span>路线图与附录</a>
+  </nav>
+  <footer>硬件:MicroPhase Z7-Nano R20 · XC7Z020<br>软件:主线 U-Boot · Linux 6.18 · Debian 13<br>知识共享,踩坑有痕</footer>
+</aside>
+<main class="main">
+  <div class="chapter-tag">CHAPTER 07</div>
+  <h2 class="title">踩坑大全</h2>
+  <p class="subtitle">17 条真金坑,全部踩在 2026-11-18 这一天——症状、根因、解法,一个不少。</p>
+
+  <p>从开箱到全自主启动只用了一天。不是因为路平,而是因为每个坑都被当场踩穿、当场记账:</p>
+  <ul>
+    <li>开箱测试:跳线、网口、老 dropbear,三个坑迎接新人——外加一个随时会爆的串口工具;</li>
+    <li>构建三件套:defconfig 改制、MDIO 地址靠猜,坑随主线生态而来;</li>
+    <li>制卡:FAT 的属主、sfdisk 的偏移、lsblk 的空格,坑藏在脚本细节里;</li>
+    <li>深夜排雷:BOOT.BIN 的三个格式坑,联手制造了当晚最长的沉默——多亏 JTAG 逐个击破;</li>
+    <li>联网收尾:end0 改名、networkd 清地址、时间错乱,坑专挑松懈的时候出手。</li>
+  </ul>
+  <p>这一章是完整账本:17 条坑,每条按<strong>症状(看到什么)→ 根因(为什么)→ 解法(怎么办)</strong>三段式展开,再附一条"同类预防"。这些坑的价值不止"下次避雷"——每条背后都藏着一条可迁移的规律,章末的「踩坑的元规律」会把它们收拢成 5 条。先看全貌:</p>
+  <table>
+    <tr><th>类别</th><th>条数</th><th>坑位</th><th>原时间线编号</th></tr>
+    <tr><td>硬件类</td><td>4</td><td>坑 1–4</td><td>#1 / #2 / #12 / #17</td></tr>
+    <tr><td>软件工具类</td><td>5</td><td>坑 5–9</td><td>#4 / #5 / #13 / #14 / #15</td></tr>
+    <tr><td>二进制格式类</td><td>3</td><td>坑 10–12</td><td>#9 / #10 / #11</td></tr>
+    <tr><td>网络类</td><td>2</td><td>坑 13–14</td><td>#7 / #8</td></tr>
+    <tr><td>方法论类</td><td>3</td><td>坑 15–17</td><td>#3 / #6 / #16</td></tr>
+  </table>
+  <p>分组重排,原时间线编号括注保留——你可以按类别精读,也可以按编号还原当晚的时间线。把编号放回流程里,就是这一天真实的样子:</p>
+  <div class="flow">
+    <div class="node"><b>开箱测试</b>:跳线静默(#1)· 插错网口(#2)· dropbear 拒连(#4)· 串口工具暴毙(#12)</div>
+    <div class="arrow">↓</div>
+    <div class="node"><b>构建三件套与设备树</b>:defconfig 改名(#5)· MDIO 地址靠猜(#6)</div>
+    <div class="arrow">↓</div>
+    <div class="node"><b>制卡</b>:cp -a 暴毙(#13)· sfdisk 怪分区与 ~(#14)· lsblk 空格(#15)</div>
+    <div class="arrow">↓</div>
+    <div class="node"><b>深夜排雷</b>:mkbootimage 被拒(#9)· 结束标记(#10)· 校验和(#11)· 静默三真凶(#3)· 玄学掉线(#17)</div>
+    <div class="arrow">↓</div>
+    <div class="node"><b>联网收尾</b>:end0 改名(#7)· networkd 清地址(#8)· 时间错乱(#16)</div>
+  </div>
+  <div class="box box-step">
+    <div class="box-title">如何使用本章</div>
+    <ul>
+      <li>正在排障:按类别找到你症状所在的那一组,对号入座读三段式;</li>
+      <li>系统性学习:按组顺读,每读完一组问自己"这组的共同假设错在哪";</li>
+      <li>复盘提炼:直接跳元规律,再回头找每条规律对应的坑;</li>
+      <li> 对照自查:把自己项目里的坑也按这个三段式记一遍——账本越记,坑越浅。</li>
+    </ul>
+  </div>
+  <p>还有一条说明:每条坑的"解法"都是当晚实际奏效的做法,不是事后的理想化重构——能用、够快、可复现,就是好解法。</p>
+
+  <div class="box box-step">
+    <div class="box-title">第一组 · 硬件类(坑 1–4,原 #1 / #2 / #12 / #17)</div>
+    <p>板子和物理世界不会撒谎,但它们也不解释。这一组的坑全部源于同一个事实:<strong>眼睛看到的不一定是全部</strong>——插没插对口、线材好不好、设备为什么消失,系统日志一概不会主动告诉你。</p>
+    <p>硬件坑的统一解法只有一个字:换。换口、换线、换卡——每次只换一个变量,换完立刻再看。</p>
+  </div>
+
+  <h3>坑 1 · 串口全静默,第一反应查跳线(原 #1) <code>硬件</code></h3>
+  <p><strong>症状:</strong>
+    上电后串口一点输出都没有,连一个乱码都没有;
+    而且换卡、换镜像、换内核,结果全都一样静默。
+    出现环节:每一次"信心满满地上电"。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p>跳线不在 SD 档。启动介质由跳线决定,BootROM 按档位找卡——JTAG 档下它干脆不读卡,直接空等。
+      找不到启动介质,自然一个字都不会打印。</p>
+  </div>
+  <p><strong>解法:</strong>
+    核对跳线到 SD 档。不确定时用 JTAG 验证(第 6 章):
+    <code>mdw 0xF800025C</code> 读 BOOT_MODE 寄存器,读回 5 才是 SD 档。
+    这是"串口全静默"的第一反应动作,成本 10 秒,排除一个最大嫌疑。</p>
+  <p><strong>同类预防:</strong>上电前过一遍硬件检查单——跳线档位、线缆端口、供电来源,三项各看一眼再按开关。</p>
+
+  <h3>坑 2 · 网口插到 PL ETH:单边有链路(原 #2) <code>硬件</code></h3>
+  <p><strong>症状:</strong>
+    网线插上,电脑侧显示"已连接",板子侧网卡却始终无载波(NO-CARRIER),ping 不通。
+    出现环节:开箱测试,给板子配 IP 的那一步——第一个网络实验,开门就不顺。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p>Z7-Nano 有两个 RJ45:<strong>PS ETH</strong>(Zynq GEM + RTL8211F,当前系统可用)和
+      <strong>PL ETH</strong>(需要 FPGA 逻辑,当前系统不可用)。
+      插到 PL 口,电脑侧 PHY 自协商出链路,但板子的 PS 侧什么也收不到——
+      <strong>"单边有链路"正是插错口的典型特征</strong>。</p>
+  </div>
+  <p><strong>解法:</strong>
+    换到另一个口(PS ETH)。两个口一张表就能说清:
+  </p>
+  <table>
+    <tr><th>口</th><th>归谁</th><th>依赖</th><th>当前系统</th></tr>
+    <tr><td>PS ETH</td><td>Zynq GEM + RTL8211F PHY</td><td>仅需 PS 初始化(FSBL/设备树)</td><td>可用(end0)</td></tr>
+    <tr><td>PL ETH</td><td>FPGA 逻辑</td><td>需要 PL 比特流 + 逻辑设计</td><td>不可用</td></tr>
+  </table>
+  <p>
+    下次看到"电脑有链路、板子没载波"的不对称组合,
+    直接怀疑物理端口,不用查驱动配置。</p>
+  <p><strong>同类预防:</strong>多口板卡上手先画一张端口表——哪个口归 PS、哪个归 PL、各自需要什么条件才能工作,插线之前对表。</p>
+
+  <h3>坑 3 · 拔一次 type-C,串口工具就死(原 #12) <code>硬件</code></h3>
+  <p><strong>症状:</strong>
+    拔插 type-C 口(重新上电)后 <code>/dev/ttyUSB</code> 消失,串口工具直接崩溃退出;
+    而重新上电的启动 log 只有几秒,错过就没了——
+    工具一死,最宝贵的现场(启动头几秒的输出)陪葬。
+    出现环节:第一次尝试"拔电重开"的瞬间。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p>USB 串口设备节点随物理拔插生灭:设备一消失,打开它的工具要么报错退出,要么对着失效的句柄干等。
+      而嵌入式排障偏偏离不开反复上电——工具活不过一次拔插,排障节奏就全乱了。</p>
+  </div>
+  <p><strong>解法:</strong>
+    监听工具必须能<strong>自动重连</strong>——本仓库 <code>code/uart.py</code> 的 listen 模式
+    在设备消失时循环重试、耐心等设备回来:</p>
+  <pre><code><span class="k">python3</span> code/uart.py listen 300 | tee boot.log
+<span class="c"># 上电前敲下它,守 5 分钟,拔插重连都扛得住</span></code></pre>
+  <p>
+    更重要的纪律:<strong>上电前就开始监听</strong>,让工具守株待兔,而不是追着 log 跑。</p>
+  <p><strong>同类预防:</strong>选串口工具的第一标准不是功能多,而是"设备消失后会不会死"。</p>
+
+  <h3>坑 4 · UART 线接触不良:CH340"干净地"消失(原 #17) <code>硬件</code></h3>
+  <p><strong>症状:</strong>
+    串口时有时无;掉线瞬间 dmesg 里没有任何芯片级错误,CH340 就像从 USB 总线上蒸发。
+    出现环节:排雷深夜,串口行为开始"玄学"的时候。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p>type-C 线材接触不良。CH340 掉线的表现太"干净"——
+      没有 CRC 错误、没有驱动报错,只是设备静默离线——
+      很容易被误判为软件问题,让人去查半天驱动、权限和配置。</p>
+  </div>
+  <p><strong>解法:</strong>
+    换线或重插,立竿见影。抽屉里常备一根确认过的好线——
+    排查半小时,不如换线十秒钟。判断口诀:dmesg 无报错的"静默离线",先怀疑物理层。</p>
+  <p><strong>同类预防:</strong>物理层的坑最会伪装成软件问题;遇到"干净的离线""玄学的时有时无",先换线再查代码。</p>
+
+  <div class="box box-step">
+    <div class="box-title">第二组 · 软件工具类(坑 5–9,原 #4 / #5 / #13 / #14 / #15)</div>
+    <p>这一组的坑里,工具本身几乎都没错——错的是我们对它的假设:它支持的算法、它输出的格式、它运行的环境。每一坑都是一次"假设校准"。</p>
+    <p>校准的通用姿势:看报错原文、看工具的原始输出、看版本与时代的差异——而不是反复重试同一命令。</p>
+  </div>
+
+  <h3>坑 5 · 老 dropbear 只认 ssh-rsa(原 #4) <code>工具</code></h3>
+  <p><strong>症状:</strong>
+    从 Ubuntu 24.04 往板上 ssh,算法协商失败连不上;换 ed25519 密钥也不被接受。
+    出现环节:开箱测试,想 ssh 替代串口的第一次尝试。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p>出厂系统(2018.3 时代)的 dropbear 版本老,只支持 ssh-rsa 算法;
+      而新版 OpenSSH 因为安全原因(SHA-1 签名过弱)默认禁用了 ssh-rsa。
+      两边的安全策略隔了八年,谁也不让步。ed25519 用户密钥它同样不认。</p>
+  </div>
+  <p><strong>解法:</strong>
+    在 <code>~/.ssh/config</code> 里为这块板单独放开 ssh-rsa:</p>
+  <pre><code>Host fpga
+    HostName 192.168.1.10
+    HostKeyAlgorithms +ssh-rsa
+    PubkeyAcceptedAlgorithms +ssh-rsa</code></pre>
+  <p>两行各管一事:HostKeyAlgorithms 管主机密钥算法,PubkeyAcceptedAlgorithms 管用户密钥算法,两个都要加。
+    注意 <code>+</code> 号的含义是"在默认列表上追加",不是"只用它"。</p>
+  <p>附注:这套老 dropbear 的公钥认证还有 PAM 相关的坑未解,密码方式实测可用——
+    bring-up 阶段够用,别恋战;等换上自制 Debian rootfs(自带新 OpenSSH),这类新旧兼容问题自然消失。</p>
+  <p><strong>同类预防:</strong>新旧系统对接,先查双方各支持什么算法、默认开什么——版本差八年,默认配置基本必然冲突。</p>
+
+  <h3>坑 6 · 6.12+ 内核没有 zynq_defconfig(原 #5) <code>工具</code></h3>
+  <p><strong>症状:</strong>
+    照老教程敲 <code>make zynq_defconfig</code>,报错 "No rule to make target"。
+    出现环节:内核构建第一步,配置还没生成就卡住。
+    教程没错、命令也没敲错——错的是教程描述的时代已经过去。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p>内核 6.12 之后 ARM 子系统移除了各家的单板 defconfig,
+      Zynq 的配置被合并进 <code>multi_v7_defconfig</code> 这个大类;板级差异全部交给设备树表达。
+      老教程描述的世界,在主线里已经不存在了。</p>
+  </div>
+  <p><strong>解法:</strong>
+    <code>make multi_v7_defconfig</code>;设备树放 <code>arch/arm/boot/dts/xilinx/</code> 并在 Makefile 注册。
+    U-Boot 主线同理。两棵树的新玩法一张表:
+  </p>
+  <table>
+    <tr><th>树</th><th>defconfig</th><th>板级差异由谁表达</th></tr>
+    <tr><td>Linux 6.18</td><td><code>multi_v7_defconfig</code></td><td>设备树(zynq-z7-nano.dts)</td></tr>
+    <tr><td>U-Boot 主线</td><td><code>xilinx_zynq_virt_defconfig</code> + <code>DEVICE_TREE=</code></td><td>设备树(zynq-z7-nano.dts 同源)</td></tr>
+  </table>
+  <p>
+    趋势一致:单板 defconfig 退场,设备树接管一切板级描述(第 4 章)。</p>
+  <p><strong>同类预防:</strong>教程会过时,defconfig 的组织方式看主线仓库最准;报"No rule to make target"的第一反应应该是"目标名变了",而不是"我敲错了"。</p>
+
+  <h3>坑 7 · FAT 分区上 cp -a 让脚本暴毙(原 #13) <code>工具</code></h3>
+  <p><strong>症状:</strong>
+    制卡脚本拷贝启动文件时报"无法保留所有权",<code>set -e</code> 脚本当场中止,
+    半张卡躺在那里。出现环节:制卡脚本首跑。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p>FAT32 文件系统没有属主和权限的概念。
+      <code>cp -a</code> 等价于"归档模式拷贝"(保留属主、权限、时间戳等一切属性),
+      在 FAT 上"保留属主"必然失败;而在 <code>set -e</code> 脚本里,一条命令失败就是全盘中止——
+      不是数据没拷上,是"想保住的东西保不住"。</p>
+  </div>
+  <p><strong>解法:</strong>
+    FAT 分区用 <code>cp -r</code>,不要 <code>-a</code>。
+    跨文件系统拷贝前,先想想目标文件系统有什么、没什么——
+    ext4 的属主、权限、软链,到了 FAT 上全是无处安放的行李。</p>
+  <p><strong>同类预防:</strong>脚本里每个命令的失败模式都值得想一遍——尤其在 <code>set -e</code> 下,一个非致命警告就能砍停整条流水线。</p>
+
+  <h3>坑 8 · sfdisk 的 3MB 怪分区与 sudo 下的 ~(原 #14) <code>工具</code></h3>
+  <p><strong>症状:</strong>
+    两个症状共享一条坑:分区表里第二分区只有 3MB,rootfs 无处安放;
+    或者脚本 sudo 执行后找不到文件,报 No such file or directory。
+    出现环节:制卡脚本的分区与路径处理。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p>两个小陷阱打组合拳:其一,sfdisk 脚本里第二分区<strong>不写 start 参数</strong>,
+      它会贴着一个默认小偏移落位,得到 3MB 怪分区;
+      其二,<code>sudo</code> 执行时 <code>~</code> 展开成 <code>/root</code> 而不是你的家目录,
+      所有波浪线路径当场失效。</p>
+  </div>
+  <p><strong>解法:</strong>
+    分区脚本里每个分区都<strong>显式写 start</strong>(本项目:p1 从扇区 8192 起,见第 5 章);
+    脚本内一律绝对路径,不用波浪线。制卡脚本 <code>code/make-sd.sh</code> 两条都已修掉。</p>
+  <p><strong>同类预防:</strong>凡是"默认值兜底"的参数,重要场合全部显式写——默认值会变,写死的不会。</p>
+
+  <h3>坑 9 · lsblk 输出的前导空格(原 #15) <code>工具</code></h3>
+  <p><strong>症状:</strong>
+    制卡脚本的安全检查里,判断"是否可移动盘(RM=1)"永远失败,脚本拒绝开工;
+    明明插的就是读卡器,却怎么也过不了检查。
+    出现环节:制卡脚本的安全闸第一次上岗。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p><code>lsblk -no RM</code> 的输出为了列对齐带<strong>前导空格</strong>,
+      shell 字符串比较时 <code>" 1" = "1"</code> 为假——
+      看起来一模一样的两个值,字符串比较就是不等。</p>
+  </div>
+  <p><strong>解法:</strong>
+    比较前 <code>tr -d ' '</code> 去掉空格:</p>
+  <pre><code>[ <span class="s">"$(lsblk -no RM /dev/sdX | tr -d ' ')"</span> = <span class="s">"1"</span> ] || exit 1</code></pre>
+  <p>这个检查不是走过场——它就是防止把系统盘格式化的那道闸。
+    闸"卡住"(误判不可移动)顶多烦人,闸"失灵"(误判可移动)才是灾难;
+    字符串比较失败让脚本趋于安全侧,算是不幸中的万幸。
+    <code>make-sd.sh</code> 的安全检查是成套的:拒绝 NVMe、要求 RM=1——每道闸都在拦"格错盘"这个不可逆事故。</p>
+  <p><strong>同类预防:</strong>解析任何工具的输出前,先肉眼看一眼原始字节——空格、制表符、回车,都是隐形杀手。</p>
+
+  <div class="box box-step">
+    <div class="box-title">第三组 · 二进制格式类(坑 10–12,原 #9 / #10 / #11)</div>
+    <p>BOOT.BIN 不会说话,但它处处是暗号:魔术字、分区头、校验和、结束标记——每个字段都有精确语义,错一个字节就是全盘静默。这三条是当晚最深、也最有教学价值的雷区,也是第 2 章格式考古和第 6 章排雷方法论的直接导火索。</p>
+    <p>格式坑的共同点:症状全部是"静默",反馈全部要靠 JTAG 拿——这正是第 6 章存在的理由。</p>
+  </div>
+
+  <h3>坑 10 · mkbootimage 的输出被 BootROM 拒收(原 #9) <code>格式</code></h3>
+  <p><strong>症状:</strong>
+    用 antmicro zynq-mkbootimage 打的 BOOT.BIN,上电全静默;
+    JTAG 读 PC,两核停在 0xFFFFFFxx——BootROM 的错误循环,连 FSBL 的门都没进(第 6 章速查表第一行)。
+    出现环节:第一次用自己的 BOOT.BIN 替换厂商镜像——
+    期待中的 U-Boot 横幅没有出现,出现的是整晚战役的开幕。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p>两层不兼容叠加:其一,BootROM 拒收它的镜像头(具体字段当晚未逐一定位);
+      其二,更致命的是它对 ELF 分区做"节区块编码"(0x040CDA41 这种地址表),
+      而 FSBL 的语义是<strong>裸拷贝</strong>——<code>MoveImage</code> 直接搬字节,不做任何解析。
+      就算过了 ROM 这关,FSBL 也会把地址表当数据灌进内存。</p>
+  </div>
+  <p><strong>解法:</strong>
+    放弃该工具,自写打包器 <code>code/make-bootbin.py</code>(第 2 章):
+    以厂商 BOOT.BIN 的头部为模板原封不动,只替换 p2 数据、重写 p2 分区头——
+    头部每个字节都有已知好样本背书,新增代码面缩到最小。</p>
+  <p><strong>同类预防:</strong>第三方工具生成的二进制,用解剖器(<code>exbootimage -d</code>)拆开和已知好样本并排对看,再上真机——三重验收,一关都不能省。尤其当工具的实现语言(对 ELF 做节区编码)和你逆向出的消费方语义(裸拷贝)存在根本分歧时,先信语义,再查工具。</p>
+
+  <h3>坑 11 · 分区表结束标记填 0xFF 是错的(原 #10) <code>格式</code></h3>
+  <p><strong>症状:</strong>
+    自制 BOOT.BIN 让 FSBL 数出 3 个分区,把垃圾当 p3 加载,
+    PC 停在 0x5364 fallback 自旋——第 6 章 6.6 节那个五步定位案例的完整出处就是这里。
+    出现环节:自写打包器的第一版。明明只放了两个分区,FSBL 却"看见"了第三个。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p>分区表的结束标记有精确姿势:<strong>15 个 0x00000000 + 末字 0xFFFFFFFF</strong>。
+      FSBL 的 <code>GetPartitionCount()</code> 靠"空槽位 + 结束字"数分区;
+      填全 0xFF 看起来也是"没数据",但扫描逻辑不认——
+      数错分区数,后面的加载全歪。</p>
+  </div>
+  <p><strong>解法:</strong>
+    严格按 15×0 + 0xFFFFFFFF 写结束标记(<code>make-bootbin.py</code> v2 已修正):
+  </p>
+  <pre><code><span class="c"># 正确:紧跟最后一个真分区头的槽位,15 个空字 + 结束字</span>
+00000000 00000000 00000000 00000000
+<span class="c"># ……共 15 个 0x00000000……</span>
+FFFFFFFF
+
+<span class="c"># 错误:全 0xFF——FSBL 不认,分区数直接数错</span></code></pre>
+  <p>
+    格式字段的"空值"不一定是 0xFF——语义由读取方的代码决定,不由直觉决定。</p>
+  <p><strong>同类预防:</strong>不确定的字段值,翻消费方源码(FSBL 的 embeddedsw 是开源的),别按"惯例"填。惯例是统计规律,语义是逻辑必然——排雷之夜只认后者。</p>
+
+  <h3>坑 12 · 校验和是 XOR,不是求和(原 #11) <code>格式</code></h3>
+  <p><strong>症状:</strong>
+    分区头校验和(w15)有两个候选公式:
+  </p>
+  <pre><code><span class="c"># 候选 A:逐字求和后异或取反</span>
+checksum = sum(w0..w14) XOR 0xFFFFFFFF
+<span class="c"># 候选 B:求和后取补——两者对厂商样本恰好同值!</span>
+checksum = 0xFFFFFFFF - sum(w0..w14)</code></pre>
+  <p>
+    拿厂商 BOOT.BIN 验证,两个公式给出<strong>同一个结果</strong>,无法区分;
+    自算时一旦选错,偏差还容易被"差不多对"的心态放过。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p>正确公式是 <strong>XOR</strong>。但最阴险的不是公式本身,而是验证方法:
+      厂商样本的 w0..w14 恰好让两种算法同值——你的"验证通过"什么都没证明,
+      样本根本不具备区分力。验证被假阳性骗了。</p>
+  </div>
+  <p><strong>解法:</strong>
+    换一个能让两种算法给出<strong>不同答案</strong>的样本再验证(比如改动一个字段后重算两边的值对照)。
+    这是 17 条坑里方法论浓度最高的一条,展开见章末元规律第 2 条。</p>
+  <p><strong>同类预防:</strong>逆向出公式后,先构造"能证明我错"的测试,再相信它对了。</p>
+
+  <div class="box box-step">
+    <div class="box-title">第四组 · 网络类(坑 13–14,原 #7 / #8)</div>
+    <p>一条关于"名字",一条关于"管辖权"——网络的坑常常不在连通性本身,而在你对系统行为的一厢情愿。</p>
+    <p>好消息是:这两条坑都不会让系统起不来,属于"通了之后再通顺"的范畴。</p>
+  </div>
+
+  <h3>坑 13 · 网卡叫 end0,不叫 eth0(原 #7) <code>网络</code></h3>
+  <p><strong>症状:</strong>
+    <code>ip link show eth0</code> 报 "does not exist";dmesg 里躺着一句 "renamed from eth0"。
+    一行命令就能取证:</p>
+  <pre><code><span class="k">dmesg</span> | grep -i rename
+<span class="c"># ……renamed from eth0…… ← 铁证:网卡在,只是改了名</span></code></pre>
+  <p>
+    出现环节:系统起来后第一次配网。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p>新内核(6.x)给设备起"可预测网络接口名":
+      en=ethernet,d=设备树节点序号——我们的网口因此叫 <strong>end0</strong>。
+      这不是故障,是命名体系换代;那句 dmesg 就是铁证。</p>
+  </div>
+  <p><strong>解法:</strong>三选一:</p>
+  <ul>
+    <li>命令直接用 <code>end0</code>,顺应新世界;</li>
+    <li>想用传统名,内核命令行加 <code>net.ifnames=0</code>;</li>
+    <li>systemd-networkd 的 Match 两个名字都写,兼容过渡期(第 4 章的 10-eth.network 就是这么写的)。</li>
+  </ul>
+  <p><strong>同类预防:</strong>接口"消失"先看 dmesg——改名、驱动加载失败、设备未探测,
+    三种原因一句话就能分清;别急着改配置,先确认"消失"的到底是接口还是名字。</p>
+
+  <h3>坑 14 · networkd 一 restart,手动 IP 就没了(原 #8) <code>网络</code></h3>
+  <p><strong>症状:</strong>
+    手动 <code>ip addr add</code> 配好 IP 用得好好的,重启 networkd(或它自己重启)后地址消失;
+    实验网没有 DHCP 服务器,板子当场失联——刚刚还 ssh 得通,转眼连 ping 都不通。
+    出现环节:系统调通后的一次例行配置变更。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p>地址管辖权问题:手动 add 的地址不受 networkd 管理,
+      networkd 重启时按自己的配置重建接口状态,手动地址被冲掉;
+      而没有 DHCP 时它也给不出替代地址——两头落空。</p>
+  </div>
+  <p><strong>解法:</strong>
+    改配置前先想清楚"这个地址由谁管":
+    要么全交给 networkd(.network 文件写静态 IP),
+    要么实验期间别动 networkd。
+    半手动半托管的混管状态最脆弱——两边都以为自己管,其实谁都没管。</p>
+  <p><strong>同类预防:</strong>系统的每项状态都有管理者;动它之前先问"谁在管它",而不是"它现在好不好"。</p>
+
+  <div class="box box-step">
+    <div class="box-title">第五组 · 方法论类(坑 15–17,原 #3 / #6 / #16)</div>
+    <p>最贵的坑坑的不是某个工具,是思维方式。这三条与其说是坑,不如说是三次思维升级——第 6 章整章,就是坑 15 的完整解法。</p>
+    <p>方法论坑的隐性成本最高:它们不报错、不难受,只会让你在错误的方向上高效努力。</p>
+  </div>
+
+  <h3>坑 15 · "串口静默"的三大真凶(原 #3) <code>方法</code></h3>
+  <p><strong>症状:</strong>
+    串口全程静默——这同一个症状贯穿整晚,反复出现,反复让人血压升高。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p>至少三种病因呈现<strong>完全相同</strong>的症状:
+      跳线错(BootROM 空等)/
+      厂商 FSBL 是哑巴版(debug 打印被编译关闭,在干活但不出声)/
+      自制镜像坏(FSBL fallback 自旋)。
+      症状与病因是多对多,不是一对一——
+      把"串口静默"直接等同于任何一个病因,都是在赌博。</p>
+  </div>
+  <p><strong>解法:</strong>
+    用 JTAG 读 PC 分层定位——先问"死在哪一层",再问"这层里谁干的"。
+    完整打法见第 6 章(PC 速查表、反汇编定位、灌注救援、证据链三原则);
+    这也是全书最重要的一条坑,值得为它单开一章。</p>
+  <p><strong>同类预防:</strong>建立"症状 → 候选病因清单"的习惯,清单不收窄到一项,就不动手修。</p>
+
+  <h3>坑 16 · PHY 的 MDIO 地址是猜的(原 #6) <code>方法</code></h3>
+  <p><strong>症状:</strong>
+    写设备树时,PHY 挂在 MDIO 总线哪个地址没有确切资料,
+    只能先猜一个 <code>reg = &lt;1&gt;</code> 写进去。
+    猜对了网卡就通,猜错了网卡查无此 PHY——成败在此一猜。
+    出现环节:设备树移植(第 4 章)。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p>PHY 的 MDIO 地址由硬件布线决定(地址选择引脚),没查手册就是信息缺口。
+      猜错了,macb 驱动探测不到 PHY,网卡起不来。</p>
+  </div>
+  <p><strong>解法:</strong>
+    两条路:直接猜——写 1 一次猜对(RTL8211F 确实在地址 1);
+    更稳的路是利用驱动的容错——地址先写 0,macb 驱动会<strong>全总线扫描</strong>;
+    PHY 型号也不用写,内核按芯片 ID 自动识别。
+    信息不足时,优先选"让软件兜底"的方案,而不是赌运气——
+    赌赢了省十分钟,赌输了多一晚。</p>
+  <p><strong>同类预防:</strong>硬件参数拿不准,先找"容错路径"(总线扫描、自动识别、默认值回退),把不确定性关进笼子。</p>
+
+  <h3>坑 17 · 板上没有 RTC,时间是不对的(原 #16) <code>方法</code></h3>
+  <p><strong>症状:</strong>
+    系统时间与真实时间差着几小时(uptime 显示 19:40,实际已 23:xx)。
+    出现环节:深夜排雷,对着日志时间轴发懵的时候。</p>
+  <div class="box box-warn">
+    <div class="box-title">根因</div>
+    <p>板子没有 RTC 电池(时钟断电即失),实验网又没有外网(NTP 拿不到时间)——
+      每次启动,时间从默认值起算,越走越偏。</p>
+  </div>
+  <p><strong>解法:</strong>
+    知道它、接受它——不影响启动、不影响功能,本轮 bring-up 不修。
+    只有依赖时间的场景(证书校验、日志对账)才需要处理:
+    接外网 NTP,或手动设一下:
+  </p>
+  <pre><code>date -s <span class="s">"2026-11-18 23:30:00"</span>   <span class="c"># 排障时对齐时间轴,日志才可对账</span></code></pre>
+  <p>
+    <strong>判断"这个错要不要修"本身就是排障技能</strong>:把弹药留给真正卡住流程的坑。</p>
+  <p><strong>同类预防:</strong>发现异常先分类:卡流程的 / 不卡流程的——
+    先修卡流程的,记录其余,回头再说。这不是拖延,是排序。</p>
+
+  <h3>踩坑的元规律</h3>
+  <p>17 条坑讲完了。现在退后一步看全景:这些坑表面上千奇百怪,底层规律只有 5 条。</p>
+  <p>坑会变,规律不变——每条规律后面括号里的坑号,是它当晚的"出场记录":</p>
+  <ol>
+    <li><strong>症状 ≠ 病因。</strong>
+      "串口静默"背后站着至少三个真凶(坑 15)。
+      "看到什么"和"为什么"之间隔着一条证据链,别把第一步观察当结论——
+      先定层,再定点(第 6 章)。
+      换到下一块板,症状清单会换,这条规律原样适用:
+      每个症状先列候选病因清单,清单不收窄到一项,就不动手修。</li>
+    <li><strong>验证公式时,样本要能区分候选算法。</strong>
+      XOR 与求和对厂商样本恰好同值(坑 12),
+      验证通过不代表公式对,只代表样本不够好。
+      设计任何验证之前先问一句:<strong>如果我错了,这个测试能告诉我吗?</strong>
+      能证明你错的测试通过一千次,才值得相信一次——
+      这条不止适用于二进制格式,也适用于一切"逆向出来的规则"。</li>
+    <li><strong>工具的产出要三重验收。</strong>
+      自制 BOOT.BIN 要过三关:逐字节对照已知好样本(厂商 BOOT.BIN)+
+      解剖器验证(<code>exbootimage -d</code>)+ 真机 JTAG 验收
+      (坑 10 / 11 / 12 的总教训,也是第 4 章的既定流程)。
+      任何一关缺失,坏镜像就会溜到下一个环节才爆——
+      而那时,症状已经离病因很远,排查成本翻着倍涨。
+      三关的成本是几分钟,漏一关的代价是一晚上。</li>
+    <li><strong>监听要在事件之前。</strong>
+      启动 log 只有几秒,上电后才开工具就晚了(坑 3);
+      拔插会让设备消失,工具必须自动重连。
+      观察窗口要守在事件前面,而不是追在事件后面——
+      这条对串口如此,对示波器、逻辑分析仪、网络抓包同样成立。
+      凡是"错过就没有"的信号,先把耳朵支好再按下开关。</li>
+    <li><strong>接触不良,备一根好线。</strong>
+      单边链路、干净的离线——物理层的坑(坑 2 / 4)最会伪装成软件问题。
+      换线十秒,排除一半可能;
+      备一根确认过的好线,是嵌入式排障的最低配置。
+      记住这条规律的另一半:软件问题很少会"换根线就好",物理问题却总会。</li>
+  </ol>
+  <p>五条规律有一个共同的姿态:<strong>尊重不确定性,用设计好的动作去消解它</strong>——而不是用自信去覆盖它。</p>
+  <p>当晚能一天收官,靠的不是运气好,而是每个坑都被这样处理过。下一章,把还没踩的坑和想做的事排成路线图。</p>
+
+  <div class="box box-win">
+    <div class="box-title">本章小结</div>
+    <ul>
+      <li>17 条坑,五类分布:硬件 4 / 软件工具 5 / 二进制格式 3 / 网络 2 / 方法论 3;原时间线编号全文括注,可交叉对照;</li>
+      <li>每条坑三段式:症状(看到什么)→ 根因(为什么,box-warn 突出)→ 解法(怎么办),外加"同类预防"一条;</li>
+      <li>二进制格式类三条全部集中在 BOOT.BIN——当晚最深的雷区,也是催生自写打包器 make-bootbin.py 的直接原因;</li>
+      <li>方法论三条是所有坑的抽象:症状多对多、信息不足让软件兜底、知道哪些错不必修;</li>
+      <li>坑的时间线还原:开箱(4)→ 构建(2)→ 制卡(3)→ 深夜排雷(5)→ 联网收尾(3),见章首流程图;</li>
+      <li>元规律 5 条:症状≠病因 / 验证样本要有区分力 / 工具产出三重验收 / 监听在事件前 / 接触不良备好线——坑是这块板的,规律是你的;</li>
+      <li>带走这一句就够:<strong>让证据说话,别让猜想开车</strong>(第 6 章)。</li>
+    </ul>
+  </div>
+
+  <div class="pager">
+    <a href="ch6-debug.html">← 上一章:JTAG 调试方法论</a>
+    <a href="ch8-roadmap.html">下一章:路线图与附录 →</a>
+  </div>
+</main>
+</body>
+</html>

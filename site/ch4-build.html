@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 4 章 · 构建三件套 — Zynq Z7-Nano 主线 Linux 实战手册</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand">
+    <span class="chip">ZYNQ · MAINLINE</span>
+    <h1>Z7-Nano 主线 Linux</h1>
+    <p>从开箱到自主启动的完整实战</p>
+  </div>
+  <nav>
+    <a href="index.html"><span class="num">00</span>封面 · 如何使用本手册</a>
+    <a href="ch1-board.html"><span class="num">01</span>硬件档案与开箱</a>
+    <a href="ch2-bootchain.html"><span class="num">02</span>启动链与 BOOT.BIN 格式</a>
+    <a href="ch3-toolchain.html"><span class="num">03</span>工具链与开源替代</a>
+    <a class="active" href="ch4-build.html"><span class="num">04</span>构建三件套</a>
+    <a href="ch5-sdcard.html"><span class="num">05</span>制卡与首次启动</a>
+    <a href="ch6-debug.html"><span class="num">06</span>JTAG 调试方法论</a>
+    <a href="ch7-pitfalls.html"><span class="num">07</span>踩坑大全</a>
+    <a href="ch8-roadmap.html"><span class="num">08</span>路线图与附录</a>
+  </nav>
+  <footer>硬件:MicroPhase Z7-Nano R20 · XC7Z020<br>软件:主线 U-Boot · Linux 6.18 · Debian 13<br>知识共享,踩坑有痕</footer>
+</aside>
+<main class="main">
+  <div class="chapter-tag">CHAPTER 04</div>
+  <h2 class="title">构建三件套:U-Boot、内核、Debian rootfs</h2>
+  <p class="subtitle">三条流水线,一台普通 x86 Ubuntu 24.04,零 Vivado——每一条命令都可以直接复制执行。</p>
+
+  <p>第 2 章讲过启动链是 BootROM → FSBL → U-Boot → 内核 → 用户态。其中 FSBL 我们直接复用厂商现成的——它的灵魂 ps7_init 携带每块板不同的板级参数(第 2 章),自己重编收益有限。剩下三环,就在本章亲手造出来:</p>
+  <div class="flow">
+    <div class="node"><b>4.2 U-Boot</b>(主线源码 + 我们的设备树)→ u-boot-dtb.bin</div>
+    <div class="arrow">↓</div>
+    <div class="node"><b>4.3 Linux 内核</b>(multi_v7 + 同源设备树)→ zImage、dtb、899 个模块</div>
+    <div class="arrow">↓</div>
+    <div class="node"><b>4.4 Debian rootfs</b>(debootstrap + qemu 伪装)→ 一整棵 Debian 13</div>
+    <div class="arrow">↓</div>
+    <div class="node">三路产物在 <b>第 5 章</b>汇合:装进一张 SD 卡,首次启动</div>
+  </div>
+  <p>三条流水线彼此独立,顺序无所谓;设备树(4.2、4.3 各一棵)是唯一贯穿的线索,也是每块板真正的"板级支持包"。</p>
+
+  <h3>4.1 出发前:目录约定与依赖一次装齐</h3>
+  <p>先把工作台搭好。全手册统一使用这套目录:源码进 <code>src</code>,编译产物进 <code>build</code>,Debian 根文件系统长在 <code>rootfs</code>,等待上卡的启动文件放进 <code>sd</code>,厂商资料放 <code>vendor</code>。</p>
+<pre><code><span class="c"># 工作台目录约定(全手册沿用;尽量写绝对路径,sudo 下 ~ 会展开成 /root)</span>
+mkdir -p ~/zynq-mainline/{src,build,rootfs,sd,vendor}
+cd ~/zynq-mainline/src</code></pre>
+  <p>本章全程需要联网:克隆源码、apt 装包、debootstrap 下载 Debian,都在线进行。然后一条 <code>apt</code> 把所有依赖装齐——这是"本项目不需要 Vivado"的第一份证据:</p>
+<pre><code>sudo apt install gcc-arm-linux-gnueabihf device-tree-compiler bison flex bc \
+  libssl-dev libgnutls28-dev swig python3-dev libncurses-dev u-boot-tools \
+  debootstrap qemu-user-static libelf-dev p7zip-full openocd python3-serial</code></pre>
+  <p>装完可以顺手验一下交叉编译器确实就位:</p>
+<pre><code>arm-linux-gnueabihf-gcc --version | head -1
+<span class="c"># 期望看到 gcc 13.3 一行——版本足够新,不必自编工具链</span></code></pre>
+  <p>关键的几个包各司其职:</p>
+  <table>
+    <tr><th>包</th><th>为什么需要</th></tr>
+    <tr><td><code>gcc-arm-linux-gnueabihf</code></td><td>armhf 交叉编译器。Ubuntu 24.04 带的是 GCC 13.3,对内核/U-Boot 完全够用——交叉编译对编译器版本要求很宽松,不必自编工具链</td></tr>
+    <tr><td><code>device-tree-compiler</code></td><td>dtc,编译设备树</td></tr>
+    <tr><td><code>bison flex bc libssl-dev libgnutls28-dev libelf-dev</code></td><td>内核与 Kconfig 的构建期依赖</td></tr>
+    <tr><td><code>swig python3-dev libncurses-dev u-boot-tools</code></td><td>U-Boot 构建依赖与 mkimage 等工具</td></tr>
+    <tr><td><code>debootstrap</code> + <code>qemu-user-static</code></td><td>制造 ARM rootfs 的两件套(4.4 节主角)</td></tr>
+    <tr><td><code>p7zip-full</code></td><td>解厂商资料包——里面藏着 <code>zynq_fsbl.elf</code> 和硬件描述文件</td></tr>
+    <tr><td><code>openocd</code> + <code>python3-serial</code></td><td>JTAG 调试与串口工具(第 3、6 章)</td></tr>
+  </table>
+  <h3>4.2 U-Boot:主线源码 + 一份设备树</h3>
+  <h4>第一步:克隆主线源码</h4>
+<pre><code>cd ~/zynq-mainline/src
+git clone --depth 1 https://github.com/u-boot/u-boot.git   <span class="c"># 浅克隆,只取最新主线</span></code></pre>
+
+  <h4>第二步:放入 Z7-Nano 的设备树(全文)</h4>
+  <p>主线 U-Boot 不认识 Z7-Nano,我们要给它一份设备树。以下是我们实测可用的 <code>zynq-z7-nano.dts</code> 全文——把它放进 <code>arch/arm/dts/</code>。逐段的门道在代码后面讲。</p>
+<pre><code><span class="c">// SPDX-License-Identifier: GPL-2.0+
+/*
+ * MicroPhase Z7-Nano R20 (XC7Z020) — U-Boot device tree
+ * Based on zynq-zed.dts; console on uart0, 512MB DDR,
+ * RTL8211F PHY at MDIO addr 1 with reset on MIO46.
+ */</span>
+/dts-v1/;
+#include "zynq-7000.dtsi"
+#include &lt;dt-bindings/gpio/gpio.h&gt;
+
+/ {
+	model = <span class="s">"MicroPhase Z7-Nano R20"</span>;
+	compatible = <span class="s">"microphase,zynq-z7-nano"</span>, <span class="s">"xlnx,zynq-7000"</span>;
+
+	aliases {
+		ethernet0 = &amp;gem0;
+		serial0 = &amp;uart0;
+		mmc0 = &amp;sdhci0;
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = &lt;0x0 0x20000000&gt;;
+	};
+
+	chosen {
+		bootargs = "";
+		stdout-path = "serial0:115200n8";
+	};
+
+	usb_phy0: phy0 {
+		compatible = "usb-nop-xceiv";
+		#phy-cells = &lt;0&gt;;
+	};
+};
+
+&amp;clkc {
+	ps-clk-frequency = &lt;33333333&gt;;
+};
+
+&amp;gem0 {
+	status = "okay";
+	phy-mode = "rgmii-id";
+	phy-handle = &lt;&amp;ethernet_phy&gt;;
+
+	ethernet_phy: ethernet-phy@1 {
+		reg = &lt;1&gt;;
+		reset-gpios = &lt;&amp;gpio0 46 GPIO_ACTIVE_LOW&gt;;
+	};
+};
+
+&amp;sdhci0 {
+	bootph-all;
+	status = "okay";
+};
+
+&amp;uart0 {
+	bootph-all;
+	status = "okay";
+};
+
+&amp;usb0 {
+	status = "okay";
+	dr_mode = "host";
+	usb-phy = &lt;&amp;usb_phy0&gt;;
+};
+</code></pre>
+  <h4>第三步:逐段讲解——与模板的四处关键差异</h4>
+  <p>骨架套路:先 <code>#include "zynq-7000.dtsi"</code>——那是一颗 Zynq SoC 的"出厂清单",把所有外设都列好了但全部 <code>status = "disabled"</code>;板级 dts 只做三件事:<strong>挑设备打开</strong>(okay)、<strong>给板级参数</strong>(内存大小、时钟、PHY)、<strong>指控制台</strong>。我们仿 <code>zynq-zed.dts</code>,真正动过的地方就四处:</p>
+  <p><strong>差异一:控制台在 uart0,不是 uart1。</strong>Zed/Zybo 的传统控制台是 uart1,但 Z7-Nano 板上唯一启用的串口是 <strong>UART0 @ 0xE0000000</strong>,经 CH340E 接到 type-C "UART" 口(硬件上第二个串口根本没开时钟)。所以别名必须指对:</p>
+<pre><code>aliases {
+	serial0 = &amp;uart0;      <span class="c">/* stdout-path 里的 "serial0" 靠这行解析到 UART0 */</span>
+};
+chosen {
+	stdout-path = "serial0:115200n8";   <span class="c">/* 115200 8N1 */</span>
+};</code></pre>
+  <p>指错串口的症状很有迷惑性:U-Boot 明明在跑(第 6 章 JTAG 能看到 PC 在动),串口却一个字都不出。</p>
+  <p><strong>差异二:内存 512MB。</strong>内存大小每块板不一样,必须照实配写——Z7-Nano 贴的是 512MB DDR3:</p>
+<pre><code>memory@0 {
+	device_type = "memory";
+	reg = &lt;0x0 0x20000000&gt;;   <span class="c">/* 起始 0x0,长度 0x20000000 = 512MB */</span>
+};</code></pre>
+  <p>内存起点 0x0 是 Zynq 的规矩(DDR 直接映射到地址 0);写多了会在顶部踩空,写少了浪费。板上实际跑起来内核可见约 479MB,顶端一小段是保留区,正常现象。</p>
+  <p><strong>差异三:PHY 在 MDIO 地址 1,复位脚 MIO46。</strong>板上的网口是 Zynq GEM(gem0)挂一颗 Realtek RTL8211F:</p>
+<pre><code>&amp;gem0 {
+	status = "okay";
+	phy-mode = "rgmii-id";                 <span class="c">/* RGMII,收发延迟由 PHY 内部提供 */</span>
+	phy-handle = &lt;&amp;ethernet_phy&gt;;
+	ethernet_phy: ethernet-phy@1 {
+		reg = &lt;1&gt;;                              <span class="c">/* PHY 挂在 MDIO 总线地址 1 */</span>
+		reset-gpios = &lt;&amp;gpio0 46 GPIO_ACTIVE_LOW&gt;;  <span class="c">/* PHY 复位脚 = MIO46,低有效 */</span>
+	};
+};</code></pre>
+  <p>两个实战要点:其一,这个 <code>reg = &lt;1&gt;</code> 当初是拍脑袋猜的——后来上电,内核日志里的 <code>PHY [...:01]</code> 证实恰好命中。不想猜的话,先写 <code>0</code> 或干脆不写 phy 节点更稳妥,macb 驱动会对整个 MDIO 总线扫描找出真实地址;其二,节点里<strong>没有写 PHY 型号</strong>,这是故意的,原因见 4.5 节第三堂课。</p>
+  <p><strong>差异四:USB 设成 host 模式。</strong>板上是 USB3320 ULPI PHY,配一个"无操作收发器"占位驱动就够:</p>
+<pre><code>usb_phy0: phy0 {
+	compatible = "usb-nop-xceiv";   <span class="c">/* nop = 占位 PHY,真实 ULPI 不需要内核驱动 */</span>
+	#phy-cells = &lt;0&gt;;
+};
+&amp;usb0 {
+	status = "okay";
+	dr_mode = "host";               <span class="c">/* 当主机用:插 U 盘、键盘等 */</span>
+	usb-phy = &lt;&amp;usb_phy0&gt;;
+};</code></pre>
+  <p>其余节点(sdhci0、clkc 的 33.33MHz PS 时钟)与模板一致,照抄即可。另外注意每个关键节点上的 <code>bootph-all</code>——意思是"所有启动阶段都可能用到",U-Boot 识别这个标准属性,串口和 SD 必须尽早可用,别删。</p>
+  <p>还有两行小而重要:<code>model</code> 是人类可读的板名(strings 验证查的就是它);<code>compatible</code> 是驱动匹配用的两级身份——先报"microphase,zynq-z7-nano"(精确板号,目前没人认),再退到"xlnx,zynq-7000"(SoC 级通用匹配,真正起作用的是它)。这种"从具体到通用"的回退链是设备树的标准玩法。</p>
+
+  <h4>第四步:注册到 Makefile</h4>
+  <p>dts 放进去还不算数,要在 <code>arch/arm/dts/Makefile</code> 里登记一行,编译系统才会为它生成 .dtb。找到 zynq 板列表,依样画葫芦:</p>
+<pre><code><span class="c"># arch/arm/dts/Makefile,在 zynq 系列附近加一行</span>
+dtb-$(CONFIG_ARCH_ZYNQ) += zynq-z7-nano.dtb</code></pre>
+
+  <div class="box box-know">
+    <div class="box-title">为什么找不到 zynq_zed_defconfig 了?</div>
+    <p>老教程会让你 <code>make zynq_zed_defconfig</code>——2026 年的主线里已经没有这种单板 defconfig 了。U-Boot 把 Zynq-7000 全系清理成一份 <strong>xilinx_zynq_virt_defconfig</strong>:配置不再按板子分家,板级差异全部交给设备树,编译时用 <code>DEVICE_TREE=</code> 变量指名道姓。内核也在 6.12 做了同样的大合并:arm32 单板 defconfig 纷纷退场,Zynq 归入 <strong>multi_v7_defconfig</strong>。</p>
+    <p>这对我们是好事:上游好维护、新板只需一棵 dts。代价是 multi_v7 是"大而全"配置(899 个模块),关键 CONFIG 是否命中要自己验——所以 4.3 节有一张验证表。</p>
+  </div>
+  <h4>第五步:编译——用 DEVICE_TREE 覆盖默认板</h4>
+<pre><code>cd ~/zynq-mainline/src/u-boot
+<span class="c"># 1) 先装一份"Zynq 通吃"的默认配置</span>
+make O=$HOME/zynq-mainline/build/uboot CROSS_COMPILE=arm-linux-gnueabihf- xilinx_zynq_virt_defconfig
+<span class="c"># 2) 编译;DEVICE_TREE= 指定我们的板子(不指定就编默认板!)</span>
+make O=$HOME/zynq-mainline/build/uboot CROSS_COMPILE=arm-linux-gnueabihf- \
+     DEVICE_TREE=zynq-z7-nano -j24</code></pre>
+  <p><code>-j24</code> 按你的 CPU 核数改。注意 <code>DEVICE_TREE=</code> 只加在第二条 make 上——defconfig 那步不需要,编译那步绝不能忘。</p>
+  <div class="box box-know">
+    <div class="box-title">make O= 是什么意思?</div>
+    <p><code>O=目录</code> 把编译产物全部导到指定目录,源码树保持干净(out-of-tree build)。好处有三:换一个目标(比如同时编内核和 U-Boot)互不污染;删掉重编只需 <code>rm -rf</code> 一个目录;源码树随时可以 <code>git clean</code>。本章 U-Boot 用了 O=;内核为简单起见就地编译(in-tree),产物散在源码树里,同样能跑。</p>
+  </div>
+
+  <h4>第六步:验证——设备树真的嵌进去了吗</h4>
+  <p>U-Boot 会把设备树编译后嵌进自身镜像。编译完用 <code>strings</code> 确认我们的板名确实在产物里:</p>
+<pre><code>strings $HOME/zynq-mainline/build/uboot/u-boot.dtb | grep MicroPhase
+<span class="c"># 期望输出: MicroPhase Z7-Nano R20</span></code></pre>
+  <p>看到 <code>MicroPhase Z7-Nano R20</code> 就说明 DEVICE_TREE 覆盖生效。顺手认识一下三个产物:</p>
+  <table>
+    <tr><th>产物</th><th>是什么 / 干什么用</th></tr>
+    <tr><td><code>u-boot-dtb.bin</code></td><td>U-Boot 主体二进制+设备树拼接的<strong>平铺镜像</strong>——第 5 章做 BOOT.BIN 第二分区就用它</td></tr>
+    <tr><td><code>u-boot</code></td><td>带符号的 ELF——第 6 章 JTAG 调试加载用</td></tr>
+    <tr><td><code>u-boot.dtb</code></td><td>独立的设备树 blob,刚才 strings 验证的对象</td></tr>
+  </table>
+  <p>还有一件事值得知道:这份配置默认 <code>BOOTCOMMAND="run distro_bootcmd"</code>、<code>BOOTDELAY=2</code>——U-Boot 启动后倒数 2 秒,自动去 SD 卡上找 <code>/extlinux/extlinux.conf</code> 之类的引导菜单。这正是第 5 章"换内核只需改文件、不用重编 U-Boot"的机制基础。</p>
+  <p>这一小节最常见的两个翻车现场,对号入座:</p>
+  <table>
+    <tr><th>现象</th><th>原因</th></tr>
+    <tr><td>strings 查出来是 zed/zybo 等别的板名</td><td><code>DEVICE_TREE=</code> 忘了加在第二条 make 上,编的是默认板</td></tr>
+    <tr><td>No rule to make target …zynq-z7-nano.dtb</td><td>Makefile 里没登记(第四步)</td></tr>
+    <tr><td>defconfig 那步报 target 不存在</td><td>U-Boot 源码太老/克隆错仓库,xilinx_zynq_virt_defconfig 是近年才统一的</td></tr>
+  </table>
+
+  <h3>4.3 Linux 内核:multi_v7 + 同源设备树</h3>
+  <h4>第一步:放入内核版设备树(全文)</h4>
+  <p>内核也要一份同源 dts(内核树放在 <code>arch/arm/boot/dts/xilinx/</code>)。它和 U-Boot 版基本一致——四差异点原样保留——只多了一点 QSPI 预留,全文如下:</p>
+<pre><code><span class="c">// SPDX-License-Identifier: GPL-2.0+
+/*
+ * Device Tree for MicroPhase Z7-Nano R20 board (XC7Z020)
+ * Ported from zynq-zybo-z7.dts, differences:
+ *   - console on uart0 (e0000000) instead of uart1
+ *   - 512MB DDR (0x20000000)
+ *   - ETH PHY: Realtek RTL8211F, phy reset on MIO46 (from vendor live DT)
+ *   - no MIO gpio LED (SD activity LED comes from mmc driver)
+ */</span>
+/dts-v1/;
+#include "zynq-7000.dtsi"
+#include &lt;dt-bindings/gpio/gpio.h&gt;
+
+/ {
+	model = <span class="s">"MicroPhase Z7-Nano R20"</span>;
+	compatible = <span class="s">"microphase,zynq-z7-nano"</span>, <span class="s">"xlnx,zynq-7000"</span>;
+
+	aliases {
+		ethernet0 = &amp;gem0;
+		serial0 = &amp;uart0;
+		spi0 = &amp;qspi;
+		mmc0 = &amp;sdhci0;
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = &lt;0x0 0x20000000&gt;;
+	};
+
+	chosen {
+		bootargs = "";
+		stdout-path = "serial0:115200n8";
+	};
+
+	usb_phy0: phy0 {
+		#phy-cells = &lt;0&gt;;
+		compatible = "usb-nop-xceiv";
+	};
+};
+
+&amp;clkc {
+	ps-clk-frequency = &lt;33333333&gt;;
+};
+
+&amp;gem0 {
+	status = "okay";
+	phy-mode = "rgmii-id";
+	phy-handle = &lt;&amp;ethernet_phy&gt;;
+
+	ethernet_phy: ethernet-phy@1 {
+		reg = &lt;1&gt;;
+		reset-gpios = &lt;&amp;gpio0 46 GPIO_ACTIVE_LOW&gt;;
+	};
+};
+
+&amp;qspi {
+	bootph-all;
+	status = "okay";
+};
+
+&amp;sdhci0 {
+	bootph-all;
+	status = "okay";
+};
+
+&amp;uart0 {
+	bootph-all;
+	status = "okay";
+};
+
+&amp;usb0 {
+	status = "okay";
+	dr_mode = "host";
+	usb-phy = &lt;&amp;usb_phy0&gt;;
+};
+</code></pre>
+  <p>与 U-Boot 版的差异只有两处:多了 <code>spi0 = &amp;qspi</code> 别名和 <code>&amp;qspi</code> 节点——这是给将来 QSPI 启动(第 8 章路线图)留的口子;头注释里还交代了一处"没带的差异":这块板没有 MIO 上的 GPIO LED,SD 活动灯由 mmc 驱动自己点亮,所以不需要 LED 节点。同样要在 <code>arch/arm/boot/dts/xilinx/Makefile</code> 里登记:</p>
+<pre><code><span class="c"># arch/arm/boot/dts/xilinx/Makefile,zynq 系列附近</span>
+dtb-$(CONFIG_ARCH_ZYNQ) += zynq-z7-nano.dtb</code></pre>
+
+  <div class="box box-know">
+    <div class="box-title">U-Boot 一棵树、内核一棵树,为什么要两份?</div>
+    <p>两棵 dts 语义同源(描述同一块板),但消费它们的人不同:U-Boot 把<strong>自己的那份</strong>编进 u-boot-dtb.bin,内核启动时收到的则是<strong>内核树里的那份</strong> .dtb(由 extlinux.conf 的 fdt 行指定)。两份各自独立编译、独立演进——U-Boot 那份只需要"够开机搬运用"的设备,内核那份才是完整世界。</p>
+    <p>改了内核树里的 dts 却忘记 U-Boot 那份(或反过来)是移植期的经典乌龙:症状是"两级启动行为对不上"。好习惯:每次改板级差异,两边同步改。</p>
+  </div>
+  <h4>第二步:配置与编译</h4>
+<pre><code>cd ~/zynq-mainline/src
+git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
+cd linux
+<span class="c"># 1) 通用 arm32 配置(6.12 起 Zynq 单板 defconfig 已并入 multi_v7)</span>
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- multi_v7_defconfig
+<span class="c"># 2) 编内核、设备树、模块(-j 按核数调整)</span>
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j24 zImage dtbs modules
+<span class="c"># 3) 模块安装到独立目录,稍后拷进 rootfs</span>
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
+     INSTALL_MOD_PATH=$HOME/zynq-mainline/build/modules modules_install</code></pre>
+  <p>这一步的产物:<code>arch/arm/boot/zImage</code>(约 11.7MB)、<code>arch/arm/boot/dts/xilinx/zynq-z7-nano.dtb</code>,以及 899 个 <code>.ko</code> 模块共约 120MB。顺手把两个"上架"文件拷到第 5 章要用的 sd 目录:</p>
+<pre><code>mkdir -p ~/zynq-mainline/sd/boot/extlinux
+cp arch/arm/boot/zImage ~/zynq-mainline/sd/boot/
+cp arch/arm/boot/dts/xilinx/zynq-z7-nano.dtb ~/zynq-mainline/sd/boot/</code></pre>
+
+  <h4>第三步:modules_install 的两个真实的坑</h4>
+  <div class="box box-warn">
+    <div class="box-title">模块安装的两个坑(defconfig 的坑在第 7 章坑 6 有详录;modules 竞态重跑一遍即愈)</div>
+    <p><strong>坑一:偶发 cp 报错。</strong>大核数并行跑 <code>modules_install</code> 时偶发 cp 报错,这是安装脚本内部的竞态,<strong>重跑一遍即好</strong>,不影响产物正确性——别急着重装环境。</p>
+    <p><strong>坑二:目录层级。</strong><code>INSTALL_MOD_PATH</code> 指向的是一个"根",make 会自动在其下创建 <code>lib/modules/&lt;内核版本&gt;/</code> 层级。板上模块必须恰好位于 <code>/lib/modules/$(uname -r)/</code>——少一层(直接躺在 /lib/modules 下)modprobe 就一个都找不到。装完检查:</p>
+<pre><code>ls $HOME/zynq-mainline/build/modules/lib/modules/
+<span class="c"># 应看到且只有一个目录——版本号取决于你克隆内核的时点,与手册的 6.18.0 不同是正常的!</span>
+<span class="c"># 后续命令统一用变量代替版本号,现在导出它(在内核树顶层执行):</span>
+<span class="k">KVER</span>=$(make ARCH=arm kernelrelease)</code></pre>
+  </div>
+
+  <h4>第四步:.config 关键项验证表</h4>
+  <p>multi_v7 大而全,但"全"不等于"对"。启动链上每一环的 CONFIG 都不能缺席,一条命令验证:</p>
+<pre><code>grep -E 'CONFIG_(ARCH_ZYNQ|SERIAL_XILINX_PS_UART|SERIAL_XILINX_PS_UART_CONSOLE|MACB|REALTEK_PHY|USB_CHIPIDEA|EXT4_FS|CGROUPS)=' .config</code></pre>
+  <table>
+    <tr><th>配置项</th><th>预期</th><th>缺了会怎样</th></tr>
+    <tr><td><code>CONFIG_ARCH_ZYNQ</code></td><td>y</td><td>内核根本不支持这颗 SoC</td></tr>
+    <tr><td><code>CONFIG_SERIAL_XILINX_PS_UART</code></td><td>y</td><td>没有 ttyPS0,串口哑掉</td></tr>
+    <tr><td><code>CONFIG_SERIAL_XILINX_PS_UART_CONSOLE</code></td><td>y</td><td>有串口驱动但当不了控制台,看不到登录提示</td></tr>
+    <tr><td><code>CONFIG_MACB</code></td><td>y</td><td>GEM 以太网驱动缺失,网口消失</td></tr>
+    <tr><td><code>CONFIG_REALTEK_PHY</code></td><td>y</td><td>认不出 RTL8211F,链路起不来</td></tr>
+    <tr><td><code>CONFIG_USB_CHIPIDEA</code></td><td>y</td><td>Zynq 的 USB 控制器(ChipIdea IP)没人管</td></tr>
+    <tr><td><code>CONFIG_EXT4_FS</code></td><td>y</td><td>挂不上 ext4 根分区,卡在启动中途</td></tr>
+    <tr><td><code>CONFIG_CGROUPS</code></td><td>y</td><td>systemd 起不来,用户态瘫痪</td></tr>
+  </table>
+  <p>实测 multi_v7_defconfig 下这八项全部为 y,一张表安心。若你看到某项是 <code>=m</code>(编成模块)也不算错——只要对应的 .ko 确实进了 rootfs 模块目录。</p>
+  <p>有读者会问:能不能 menuconfig 裁一个精简内核?能,但建议先跑通通用配置再回头裁——899 个模块躺在 rootfs 里只占约 120MB,SD 卡有的是地方;第一次就追求极简,排障成本会指数上升。这也是全手册的基调:<strong>先求通,再求精。</strong></p>
+  <h3>4.4 Debian 13 rootfs:debootstrap 两阶段</h3>
+  <p>第三件套是根文件系统。我们不在板上装系统,而是在 x86 主机上把一整棵 Debian 13(trixie,armhf 架构)"种"出来,稍后整树拷进 SD 卡第二分区。</p>
+  <h4>第一步:--foreign 只下载、不执行</h4>
+<pre><code>cd ~/zynq-mainline
+<span class="c"># --foreign:第一阶段,只下载 .deb 并解包,不执行任何 ARM 程序</span>
+sudo debootstrap --arch=armhf --foreign trixie rootfs \
+     https://mirrors.tuna.tsinghua.edu.cn/debian
+<span class="c"># 把 ARM 解释器放进 rootfs(chroot 之后只能看见 rootfs 内部的文件!)</span>
+sudo cp /usr/bin/qemu-arm-static rootfs/usr/bin/
+<span class="c"># 第二阶段:在 chroot 里把基础系统配置完整</span>
+sudo chroot rootfs /debootstrap/debootstrap --second-stage</code></pre>
+  <p>debootstrap 的两阶段设计正是为交叉而生:第一阶段全部是"下载+解压",在什么架构的主机上都能干;第二阶段要执行 rootfs 里的 ARM 程序去配置系统——这就轮到 qemu 登场了。要用 <code>sudo</code> 是因为要创建设备节点、设置文件属主。</p>
+  <div class="box box-warn">
+    <div class="box-title">两个小提醒</div>
+    <p>目标目录必须不存在或为空——debootstrap 拒绝在非空目录里开工,重来一次之前先 <code>sudo rm -rf rootfs</code> 清场。另外第一阶段要下载整套基础包,镜像源选对了(例中清华 tuna)速度才有保障。</p>
+  </div>
+  <p>第二阶段会刷很长一串输出,最后看到这行才算成功:</p>
+<pre><code>I: Base system installed successfully</code></pre>
+  <p>至此 rootfs 是一个"能启动但几乎什么都没有"的 Debian——没有密码、没有 ssh、没有网络配置,接下来逐步补齐。</p>
+
+  <div class="box box-know">
+    <div class="box-title">qemu-user-static:让 x86 主机"装作"是 ARM</div>
+    <p><code>qemu-arm-static</code> 是一个静态链接的<strong>用户态模拟器</strong>:它把每一条 ARM 机器码翻译成 x86 再执行,遇到系统调用,又按 ARM 的 ABI 语义转交给本机内核。它模拟的不是整台机器,而是"一个跑 ARM Linux 程序的环境",所以叫 user-mode。</p>
+    <p>妙处在于你从头到尾不会显式调用它:安装 qemu-user-static 时,apt 会在内核的 <strong>binfmt_misc</strong> 机制里注册一条规则——此后任何进程试图执行 ARM ELF 文件,内核都自动把它路由给 qemu-arm-static。于是 chroot 里的 <code>/debootstrap/debootstrap</code>(ARM 程序)就"不知不觉"地跑起来了。</p>
+    <p>为什么必须先 <code>cp</code> 进 rootfs?chroot 的字面意思就是"换根":进去之后进程只见 rootfs 这棵树,宿主机的 /usr/bin 它看不见。代价是速度(逐条翻译),对 debootstrap 这种一次性任务完全无所谓。</p>
+  </div>
+
+  <h4>第二步:配置文件——哪些从外面写,哪些必须进 chroot</h4>
+  <p>接下来是一批配置。原则很简单:<strong>纯文本的,从宿主机直接写进 rootfs 最省事;要"执行程序、改变系统状态"的,必须进 chroot 让 qemu 去跑。</strong></p>
+  <table>
+    <tr><th>配置</th><th>方式</th><th>说明</th></tr>
+    <tr><td>sources.list</td><td>宿主机写文件</td><td>国内镜像 + trixie 全仓库,进 chroot 装包才能快</td></tr>
+    <tr><td>hostname</td><td>宿主机写文件</td><td>一行文本</td></tr>
+    <tr><td>fstab</td><td>宿主机写文件</td><td>两个分区各就各位</td></tr>
+    <tr><td>10-eth.network</td><td>宿主机写文件</td><td>网卡静态 IP(systemd-networkd)</td></tr>
+    <tr><td>安装软件包</td><td>chroot 内执行</td><td>要跑 apt/dpkg,自不必说</td></tr>
+    <tr><td>root 密码</td><td>chroot 内执行</td><td>chpasswd 要执行加密</td></tr>
+    <tr><td>sshd 允许 root 登录</td><td>chroot 内执行</td><td>改配置后顺手验证</td></tr>
+    <tr><td>开机自启服务</td><td>chroot 内执行</td><td>systemctl enable</td></tr>
+  </table>
+  <p>先从宿主机把四个纯文本写掉(用编辑器或 <code>tee</code> 都行,例如):</p>
+<pre><code>cd ~/zynq-mainline
+echo z7nano | sudo tee rootfs/etc/hostname
+sudo mkdir -p rootfs/etc/systemd/network       <span class="c"># 10-eth.network 的目录默认不存在</span></code></pre>
+  <div class="box box-step"><div class="box-title">步骤 · rootfs/ 里的文件归 root 所有</div><p>普通编辑器直接创建会遇到 Permission denied,统一用 heredoc 写入(以 sources.list 为例,其余三个同理):</p>
+<pre><code>sudo tee rootfs/etc/apt/sources.list &lt;&lt;'EOF'
+deb https://mirrors.tuna.tsinghua.edu.cn/debian trixie main contrib non-free-firmware
+EOF</code></pre></div>
+  <p>四个文件的内容逐一给出:</p>
+<pre><code><span class="c"># rootfs/etc/apt/sources.list —— 国内镜像,main + contrib + non-free-firmware</span>
+deb https://mirrors.tuna.tsinghua.edu.cn/debian trixie main contrib non-free-firmware
+</code></pre>
+  <p>non-free-firmware 仓库放着各种固件包,留着以备某天某外设要固件;纯 main 也够本手册用。</p>
+<pre><code><span class="c"># rootfs/etc/hostname</span>
+z7nano
+</code></pre>
+<pre><code><span class="c"># rootfs/etc/fstab —— rootfs 在 SD 第二分区,FAT 第一分区挂在 /boot</span>
+/dev/mmcblk0p2  /      ext4  errors=remount-ro  0 1
+/dev/mmcblk0p1  /boot  vfat  defaults            0 2
+</code></pre>
+<pre><code><span class="c"># rootfs/etc/systemd/network/10-eth.network —— 两个名字都匹配,静态 IP</span>
+[Match]
+Name=eth0
+Name=end0
+
+[Network]
+DHCP=no
+Address=192.168.1.10/24
+</code></pre>
+  <p>networkd 配置里为什么同时写 <code>eth0</code> 和 <code>end0</code>?网口在系统里的名字有讲究,详见 4.5 节第二堂课;如果你的网络环境有 DHCP,把 <code>DHCP=no</code> 和 Address 行换成 <code>DHCP=yes</code> 即可。</p>
+  <h4>第三步:进 chroot 收尾——装包、密码、服务</h4>
+<pre><code><span class="c"># 进入 chroot;从这里开始,每个程序都是 ARM 的,由 qemu 悄悄翻译执行</span>
+sudo chroot rootfs /bin/bash
+
+<span class="c"># ———— 以下命令都在 chroot 内执行 ————</span>
+apt update
+apt install -y openssh-server nano sudo
+echo 'root:root' | chpasswd                          <span class="c"># root 密码 = root</span>
+sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+systemctl enable ssh systemd-networkd                <span class="c"># 开机自启</span>
+exit</code></pre>
+  <p>小提示:<code>systemctl enable</code> 在 chroot 里只做"创建符号链接"这件事,恰好是我们想要的;而 <code>start</code> 这类要和真正的 init 通信的操作在 chroot 里做不了,也不需要做——上电后 systemd 自然会把它们拉起来。</p>
+
+  <h4>第四步:把内核模块装进 rootfs</h4>
+<pre><code><span class="c"># 4.3 节装出来的模块树,整棵拷进 rootfs(注意 lib/modules/$KVER 层级!)</span>
+sudo mkdir -p rootfs/lib/modules
+sudo cp -a $HOME/zynq-mainline/build/modules/lib/modules/$KVER rootfs/lib/modules/
+<span class="c"># 删掉两个指向"编译机内核源码树"的软链接,板上根本不存在,留着硌脚</span>
+sudo rm -f rootfs/lib/modules/$KVER/build rootfs/lib/modules/$KVER/source
+<span class="c"># qemu 解释器用完即弃(制卡脚本还会再删一遍,双保险)</span>
+sudo rm -f rootfs/usr/bin/qemu-arm-static</code></pre>
+  <p>至此三件套齐了。本章产物的完整去向,一张表收尾:</p>
+  <table>
+    <tr><th>产物</th><th>位置</th><th>去向</th></tr>
+    <tr><td>u-boot-dtb.bin</td><td>~/zynq-mainline/build/uboot/</td><td>第 5 章打包进 BOOT.BIN 第二分区</td></tr>
+    <tr><td>u-boot(ELF)</td><td>~/zynq-mainline/build/uboot/</td><td>第 6 章 JTAG 调试备用</td></tr>
+    <tr><td>zImage + dtb</td><td>~/zynq-mainline/sd/boot/</td><td>SD 卡第一分区(FAT32)</td></tr>
+    <tr><td>模块树 $KVER</td><td>rootfs/lib/modules/$KVER/</td><td>随 rootfs 进 SD 卡第二分区</td></tr>
+    <tr><td>Debian 13 rootfs</td><td>~/zynq-mainline/rootfs/</td><td>整体拷进 SD 卡第二分区(ext4)</td></tr>
+  </table>
+
+  <h3>4.5 设备树三堂课</h3>
+  <p>移植过程中最容易让新手困惑的三个问题,单独开三堂课讲透——每一课背后都有一个真实踩过的坑。</p>
+  <div class="box box-know">
+    <div class="box-title">第一课:这棵设备树里为什么没有 pinctrl?</div>
+    <p>习惯了 i.MX、树莓派设备的读者会发现:我们的 dts 里找不到任何引脚复用(pinctrl)节点。这是<strong>Zynq-7000 的设计</strong>:它没有 pinctrl 子系统——54 个 MIO 引脚的复用与电气配置,全部由 FSBL 执行的 ps7_init(数千条寄存器写操作)在内核启动之前完成。</p>
+    <p>这正是第 2 章"FSBL 的灵魂是 ps7_init"的另一面:设备树只描述"有哪些设备",不管"引脚怎么接";引脚归 FSBL 管,参数每块板不同,藏在 Vivado 硬件工程(厂商 hdf)里。推论:如果某个外设引脚功能不对,改设备树是没用的,得改 ps7_init 重新生成 FSBL。</p>
+  </div>
+  <div class="box box-know">
+    <div class="box-title">第二课:网口为什么叫 end0,不叫 eth0?</div>
+    <p>新系统里 <code>ip link show eth0</code> 会得到 "does not exist",板上的网口叫 <strong>end0</strong>——en = ethernet,d = device-tree,0 = 设备树里的序号。这是 systemd/udev 的"可预测网络接口名":传统 eth0 按 probe 顺序编号,换内核可能变名;可预测名从设备树来,永远稳定。</p>
+    <p>dmesg 里 <code>end0: renamed from eth0</code> 就是改名现场,是排障时的铁证。想回退传统名字:内核命令行加 <code>net.ifnames=0</code>。但更稳的做法是像我们的 10-eth.network 那样,Match 里把 <code>eth0</code> 和 <code>end0</code> 都写上,两套命名通吃。</p>
+  </div>
+  <div class="box box-know">
+    <div class="box-title">第三课:PHY 节点为什么连型号都不写?</div>
+    <p>ethernet-phy@1 里没有 compatible、没提 RTL8211F——这是内核通用 PHY 机制的本事:MDIO 总线初始化后,内核直接读 PHY 芯片自带的 ID 寄存器(厂商号+型号),自动挑对应驱动。所以型号不写也能工作,我们的 RTL8211F 就是裸着挂上去的。</p>
+    <p>同理,连 MDIO 地址都可以"不猜":<code>reg = &lt;0&gt;</code> 时 macb 驱动会扫描整条 MDIO 总线找出真实地址。我们写 1 是照厂商运行时设备树抄的,一把猜中;你移植新板没有参照时,写 0 是最稳的起步姿势。</p>
+  </div>
+
+  <div class="box box-step">
+    <div class="box-title">离开本章前的自查清单</div>
+    <ol>
+      <li><code>strings .../build/uboot/u-boot.dtb | grep MicroPhase</code> 能看到 Z7-Nano R20;</li>
+      <li>八项关键 CONFIG 全部 <code>=y</code>(4.3 节那条 grep);</li>
+      <li><code>build/modules/lib/modules/</code> 下只有一个 <code>6.18.0</code> 目录;</li>
+      <li><code>rootfs/etc/hostname</code> 为 z7nano,10-eth.network 已就位;</li>
+      <li>rootfs 里有 ssh,有密码,且 <code>usr/bin/qemu-arm-static</code> 已删。</li>
+    </ol>
+  </div>
+
+  <p>清单全绿,就可以带着三件套进入第 5 章的制卡与首启了。</p>
+
+  <div class="box box-win">
+    <div class="box-title">本章小结</div>
+    <ul>
+      <li>三件套全部来自主线/官方源码,apt 一条命令备齐工具链,全程零 Vivado;</li>
+      <li>两棵同源设备树,真正的差异只有四处:uart0 控制台、512MB 内存、PHY@MDIO1+MIO46 复位、USB host(内核版多一个 QSPI 预留);</li>
+      <li>defconfig 的世界变了:U-Boot 走 xilinx_zynq_virt_defconfig + DEVICE_TREE 覆盖,内核走 multi_v7_defconfig,关键 CONFIG 用验证表自己盯;</li>
+      <li>debootstrap --foreign + qemu-arm-static 两阶段造 rootfs:纯文本配置从外面写,要执行的命令进 chroot,模块树按 /lib/modules/&lt;版本&gt;/ 层级拷入;</li>
+      <li>Zynq 无 pinctrl(MIO 归 FSBL 管)、网口叫 end0(net.ifnames=0 可回退)、PHY 型号可按芯片 ID 自动识别——三堂课的知识在第 5 章首启时都会现身。</li>
+    </ul>
+  </div>
+
+  <div class="pager">
+    <a href="ch3-toolchain.html">← 上一章:工具链与开源替代</a>
+    <a href="ch5-sdcard.html">下一章:制卡与首次启动 →</a>
+  </div>
+</main>
+</body>
+</html>

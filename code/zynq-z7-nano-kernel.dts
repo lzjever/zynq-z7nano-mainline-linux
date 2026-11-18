@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: GPL-2.0+
+/*
+ * Device Tree for MicroPhase Z7-Nano R20 board (XC7Z020)
+ * Ported from zynq-zybo-z7.dts, differences:
+ *   - console on uart0 (e0000000) instead of uart1
+ *   - 512MB DDR (0x20000000)
+ *   - ETH PHY: Realtek RTL8211F, phy reset on MIO46 (from vendor live DT)
+ *   - no MIO gpio LED (SD activity LED comes from mmc driver)
+ */
+/dts-v1/;
+#include "zynq-7000.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+
+/ {
+	model = "MicroPhase Z7-Nano R20";
+	compatible = "microphase,zynq-z7-nano", "xlnx,zynq-7000";
+
+	aliases {
+		ethernet0 = &gem0;
+		serial0 = &uart0;
+		spi0 = &qspi;
+		mmc0 = &sdhci0;
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = <0x0 0x20000000>;
+	};
+
+	chosen {
+		bootargs = "";
+		stdout-path = "serial0:115200n8";
+	};
+
+	usb_phy0: phy0 {
+		#phy-cells = <0>;
+		compatible = "usb-nop-xceiv";
+	};
+};
+
+&clkc {
+	ps-clk-frequency = <33333333>;
+};
+
+&gem0 {
+	status = "okay";
+	phy-mode = "rgmii-id";
+	phy-handle = <&ethernet_phy>;
+
+	ethernet_phy: ethernet-phy@1 {
+		reg = <1>;
+		reset-gpios = <&gpio0 46 GPIO_ACTIVE_LOW>;
+	};
+};
+
+&qspi {
+	bootph-all;
+	status = "okay";
+};
+
+&sdhci0 {
+	bootph-all;
+	status = "okay";
+};
+
+&uart0 {
+	bootph-all;
+	status = "okay";
+};
+
+&usb0 {
+	status = "okay";
+	dr_mode = "host";
+	usb-phy = <&usb_phy0>;
+};

@@ -1,0 +1,5 @@
+the_ROM_image:
+{
+[bootloader]/home/percy/zynq-mainline/vendor/04_Linux_Demo/1_petalinux_boot_from_sd/images/zynq_fsbl.elf
+/home/percy/zynq-mainline/build/uboot/u-boot
+}

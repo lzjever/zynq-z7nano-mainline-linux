@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>封面 · 如何使用本手册 — Zynq Z7-Nano 主线 Linux 实战手册</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand">
+    <span class="chip">ZYNQ · MAINLINE</span>
+    <h1>Z7-Nano 主线 Linux</h1>
+    <p>从开箱到自主启动的完整实战</p>
+  </div>
+  <nav>
+    <a href="index.html" class="active"><span class="num">00</span>封面 · 如何使用本手册</a>
+    <a href="ch1-board.html"><span class="num">01</span>硬件档案与开箱</a>
+    <a href="ch2-bootchain.html"><span class="num">02</span>启动链与 BOOT.BIN 格式</a>
+    <a href="ch3-toolchain.html"><span class="num">03</span>工具链与开源替代</a>
+    <a href="ch4-build.html"><span class="num">04</span>构建三件套</a>
+    <a href="ch5-sdcard.html"><span class="num">05</span>制卡与首次启动</a>
+    <a href="ch6-debug.html"><span class="num">06</span>JTAG 调试方法论</a>
+    <a href="ch7-pitfalls.html"><span class="num">07</span>踩坑大全</a>
+    <a href="ch8-roadmap.html"><span class="num">08</span>路线图与附录</a>
+  </nav>
+  <footer>硬件:MicroPhase Z7-Nano R20 · XC7Z020<br>软件:主线 U-Boot · Linux 6.18 · Debian 13<br>知识共享,踩坑有痕</footer>
+</aside>
+<main class="main">
+  <h2 class="title">Zynq Z7-Nano 主线 Linux 实战手册</h2>
+  <p class="subtitle">从开箱到自主启动:一次真实移植的完整复盘,新手可以直接跟做</p>
+
+  <div class="hero">
+    <h2>一天,给 Zynq-7000 换上一颗现代的心脏</h2>
+    <p>很多 Zynq 开发板出厂带的还是 2018 年的 PetaLinux:内核停在七年前,SSH 连不上新系统,安全补丁早已断流。这本手册记录的是一次<strong>真实完成</strong>的移植:不开 Vivado、不用厂商 SDK,纯开源工具链,把一块 MicroPhase Z7-Nano 刷成主线 U-Boot + Linux 6.18 + Debian 13——而且,从开箱到自主启动,只用了一天。</p>
+    <p>白天开箱、构建、制卡;深夜用 JTAG 一层层排查"串口全静默"的幽灵故障,最终在当天夜里看到登录提示符。中间踩的每一个坑,都有完整的"症状、定位、修复"记录,原样整理给你——希望你踩过的坑,比我们少。</p>
+    <div class="stat-row">
+      <div class="stat"><b>1 天</b>开箱到自主启动</div>
+      <div class="stat"><b>~30 秒</b>上电到登录提示</div>
+      <div class="stat"><b>Linux 6.18</b>主线内核</div>
+      <div class="stat"><b>Debian 13</b>trixie 用户态</div>
+      <div class="stat"><b>1 套</b>JTAG 分层定位方法论</div>
+      <div class="stat"><b>17 个</b>坑全部记录在案</div>
+    </div>
+  </div>
+
+  <h3>为什么值得折腾:出厂系统 vs 主线成果</h3>
+  <p>先上对比表,你就知道这一天的忙碌换来了什么:</p>
+  <table>
+    <tr><th>维度</th><th>出厂 PetaLinux 2018.3</th><th>本手册的成果</th></tr>
+    <tr><td>内核</td><td>2018 年的厂商内核,随 BSP 停更</td><td>主线 Linux 6.18,持续演进</td></tr>
+    <tr><td>用户态</td><td>出厂精简系统,软件要自己交叉编译</td><td>Debian 13(trixie),<code>apt install</code> 的世界</td></tr>
+    <tr><td>SSH</td><td>老版 dropbear 只认 ssh-rsa,Ubuntu 24.04 的 OpenSSH 默认直接拒绝</td><td>现代 openssh-server,算法协商无障碍</td></tr>
+    <tr><td>换内核</td><td>重新打包 image.ub,链条绑死</td><td>extlinux.conf 改一行,U-Boot 原样不动</td></tr>
+    <tr><td>构建工具</td><td>绑定厂商 SDK 与特定发行版</td><td>apt 装交叉工具链,全程不装 Vivado</td></tr>
+  </table>
+  <p>最后一行尤其重要:整套流程<strong>不依赖任何 Xilinx 专有工具</strong>——BOOT.BIN 用自写脚本打包,JTAG 用 OpenOCD,FSBL 直接复用厂商现成产物。想动 PL(FPGA 逻辑)时才需要请出 Vivado,那是第 08 章路线图的后话。</p>
+  <h4>和官方教程比,这本手册强在哪</h4>
+  <p>官方指南假设你围绕 Vivado 与 PetaLinux 工作,工具重、版本绑死;零散的社区教程常常只给命令不给"为什么",一出错就卡死。本手册的取舍是:</p>
+  <ul>
+    <li>路线全开源:能不用的专有工具一律不用,每个环节都有开源替代(第 03 章逐环节分析);</li>
+    <li>每个关键操作讲"是什么、为什么",不只给命令——真正卡住你的从来不是命令本身,是命令背后的机制;</li>
+    <li>失败不删档:被 BootROM 拒收的镜像、打包器踩过的格式坑,原样留档示警(第 02、07 章);</li>
+    <li>代价:以一块具体板子为纲,通用性靠"讲清楚哪些参数因板而异"来补——这类参数手册里都用加粗标出。</li>
+  </ul>
+
+  <h3>这一天到底发生了什么</h3>
+  <p>先给你一条主线剧情,后面的章节就是把它放大成可复现的步骤:</p>
+  <div class="flow">
+    <div class="node"><b>开箱</b> — 出厂 PetaLinux 2018.3 跑通,串口、网口、XADC 体检全绿,确认硬件无恙</div>
+    <div class="arrow">↓</div>
+    <div class="node"><b>构建</b> — apt 装交叉工具链,编主线 U-Boot、Linux 6.18 内核、debootstrap 做 Debian 13 rootfs</div>
+    <div class="arrow">↓</div>
+    <div class="node"><b>制卡</b> — 自写 BOOT.BIN 打包器与制卡脚本,写好 FAT32 + ext4 双分区 SD 卡</div>
+    <div class="arrow">↓</div>
+    <div class="node"><b>深夜排雷</b> — 首次启动串口全静默;OpenOCD 读 PC 分层定位,揪出 BOOT.BIN 里两处格式错误</div>
+    <div class="arrow">↓</div>
+    <div class="node"><b>成功</b> — 上电约 30 秒到登录提示,ssh 延迟约 1.1ms,空闲结温 55°C</div>
+  </div>
+
+  <div class="box box-know">
+    <div class="box-title">关于事实来源</div>
+    <p>本手册所有命令、数据与踩坑记录,均萃取自 2026-11-18 一次真实的完整移植 session,以仓库的权威素材库(DIGEST)为唯一事实来源。文中没有"理论上应该可以"的步骤——写出来的每一条命令,都在这块板子上敲过;每一个数字,都有实测出处;每一个坑,都有现场。</p>
+  </div>
+
+  <h3>实验环境一览</h3>
+  <table>
+    <tr><th>项目</th><th>实况</th></tr>
+    <tr><td>开发板</td><td>MicroPhase Z7-Nano R20:Xilinx Zynq XC7Z020-2CLG400,DDR3 512MB</td></tr>
+    <tr><td>出厂系统</td><td>PetaLinux 2018.3(出厂 SD 卡,FAT32 根目录 BOOT.BIN + image.ub)</td></tr>
+    <tr><td>工作机</td><td>Ubuntu 24.04.5,24 核 / 62GB 内存(核数只影响编译速度,不影响可行性)</td></tr>
+    <tr><td>最终成果</td><td>主线 U-Boot + Linux 6.18 + Debian 13(trixie),SD 卡启动,ssh 可登录</td></tr>
+  </table>
+
+  <div class="box box-step">
+    <div class="box-title">跟做前的准备清单</div>
+    <table>
+      <tr><th>类别</th><th>要什么</th><th>说明</th></tr>
+      <tr><td>板卡</td><td>Z7-Nano(或其他 Zynq-7000 板)</td><td>换板思路一致,但设备树与 ps7_init 参数要跟着换(第 01 章末有换板提示)</td></tr>
+      <tr><td>出厂 SD 卡</td><td>随板附带的那张</td><td>厂商 BOOT.BIN 是后续打包的"已知好样本"模板,千万别扔</td></tr>
+      <tr><td>线材</td><td>type-C 数据线至少一根、网线一根</td><td>type-C 线的质量就是串口排障的生命线(第 01 章有血泪教训);网线用于板和电脑直连</td></tr>
+      <tr><td>存储</td><td>读卡器 + 一张空白 SD 卡</td><td>要装得下 512MB 引导分区加整个 rootfs</td></tr>
+      <tr><td>主机</td><td>Ubuntu 机器(实测 24.04.5)</td><td>虚拟机也行,但 USB 串口要配置透传;磁盘建议 ≥40GB,时间预算:内核编译(24 核)约 15 分钟、debootstrap 二阶段半小时上下</td></tr>
+      <tr><td>软件</td><td>python3 + pyserial + xxd(第 02 章解剖实验用,vim-common 包)</td><td>串口助手 uart.py 的依赖与工具(apt 装 python3-serial 即可)</td></tr>
+    <tr><td>本手册仓库</td><td><code>git clone https://github.com/lzjever/zynq-z7nano-mainline-linux</code></td><td>uart.py / make-bootbin.py / make-sd.sh 等全部配套代码在仓库 <code>code/</code> 下;全书命令默认在仓库根目录执行</td></tr>
+      <tr><td>知识</td><td>基本命令行 + 大概懂 IP 地址</td><td>够了,剩下的手册里讲</td></tr>
+    </table>
+  </div>
+
+  <h3>谁该读这本手册</h3>
+  <p>如果你符合下面任何一条,这本手册就是为你写的:</p>
+  <ul>
+    <li><strong>手里有一块 Zynq-7000 板子</strong>(不限 Z7-Nano),想把出厂老系统换成主线内核 + 现代发行版,不想被 2018 年的工具链绑死;</li>
+    <li><strong>学过一点 Linux,想入门嵌入式移植</strong>,但受够了"先装 40GB SDK"的劝退流程,想走一条全开源、可审计的路线;</li>
+    <li><strong>FPGA 背景</strong>,想让板子的 ARM 侧先跑起来,给后面的 PL 开垦铺路;</li>
+    <li><strong>想让老板/导师看到板子跑新内核</strong>,而且最好这周就能看到。</li>
+  </ul>
+  <div class="box box-warn">
+    <div class="box-title">先说清楚:这本手册"不是"什么</div>
+    <ul>
+      <li>不是 FPGA 教程——全程只动 PS(ARM 侧),不写一行 Verilog,PL 开垦放在第 08 章路线图;</li>
+      <li>不是内核开发教程——我们不改内核源码,直接用主线,只做设备树移植;</li>
+      <li>不要求你有嵌入式移植经验——但假设你会基本的 Linux 命令行,能在一台 Ubuntu(实体机或虚拟机)上安装软件包;</li>
+      <li>不保证你的板子零踩坑——但保证每个坑都有对应的解法,而且告诉你怎么自己定位新的坑。</li>
+    </ul>
+  </div>
+
+  <h3>封面 FAQ:四个最常被问的问题</h3>
+  <h4>Q1:需要会 FPGA / Verilog 吗?</h4>
+  <p>完全不需要。全程只动 PS(ARM 侧),PL 一根毛都不碰——这正是本手册敢号称"新手可跟做"的底气。想学 FPGA?那是第 08 章路线图里的"进阶方向",先把 Linux 跑起来再说。</p>
+  <h4>Q2:我的板子不是 Z7-Nano,能跟吗?</h4>
+  <p>能。启动链理论、构建流程、JTAG 方法论对任何 Zynq-7000 板都成立;要换的只是"因板而异"的参数:设备树(串口/内存/PHY)、FSBL 里的 ps7_init(直接复用你板子的厂商 FSBL 即可)。第 01 章末尾有专门的换板提示。</p>
+  <h4>Q3:我的电脑没有 24 核,能编吗?</h4>
+  <p>能。核数只影响编译速度,不影响可行性——把 -j24 换成 -j$(nproc),多等一会儿而已。实测用的 Ubuntu 24.04 自带 GCC 13.3,对交叉编译完全够用。</p>
+  <h4>Q4:会把板子刷坏吗?</h4>
+  <p>本手册走 SD 卡启动,不动板载闪存——卡刷坏了换张卡,板子毫发无伤。真到万不得已,还有 JTAG 这条"物理层救援通道"(第 06 章的方法,第 08 章的方向二),BootROM 在 JTAG 档永远等你。</p>
+
+  <h3>怎么读:两种姿势</h3>
+  <h4>姿势一:按章顺序跟做(第一次强烈推荐)</h4>
+  <p>第 01 到 05 章是一条完整的流水线:开箱体检 → 启动链理论 → 工具链 → 构建三件套 → 制卡首启。一边读一边在你的板子上复现,顺利的话一个周末(甚至一天)能走完。第 06、07 章是"出事之后再读"的两章——但相信我,你会读到的。全流程对应的章节地图:</p>
+  <table>
+    <tr><th>阶段</th><th>干什么</th><th>对应章节</th></tr>
+    <tr><td>开箱与体检</td><td>认清接口、跑通出厂系统、串口网络 XADC 全绿</td><td>01</td></tr>
+    <tr><td>理论与工具</td><td>吃透启动链、摸清 BOOT.BIN 格式、备好开源工具链</td><td>02 – 03</td></tr>
+    <tr><td>构建</td><td>交叉编译 U-Boot 与内核,debootstrap 造 Debian rootfs</td><td>04</td></tr>
+    <tr><td>制卡与首启</td><td>打包 BOOT.BIN、写卡、插卡上电见登录提示</td><td>05</td></tr>
+    <tr><td>排雷与收官</td><td>JTAG 分层定位、17 坑对照、规划下一步</td><td>06 – 08</td></tr>
+  </table>
+  <p>跟着做的时候,你会依次撞见五个"里程碑"——每见到一个,说明前面的路没白走:</p>
+  <div class="flow">
+    <div class="node"><b>里程碑 1</b> — 串口滚出出厂系统的启动日志(第 01 章)</div>
+    <div class="arrow">↓</div>
+    <div class="node"><b>里程碑 2</b> — root/root 登录出厂系统,双向 ping 通</div>
+    <div class="arrow">↓</div>
+    <div class="node"><b>里程碑 3</b> — 自己编的 U-Boot 横幅出现在串口上(第 05 章)</div>
+    <div class="arrow">↓</div>
+    <div class="node"><b>里程碑 4</b> — extlinux 菜单与内核加载日志刷屏</div>
+    <div class="arrow">↓</div>
+    <div class="node"><b>里程碑 5</b> — <b>z7nano login:</b> 登录提示出现,ssh 上板,大功告成</div>
+  </div>
+  <h4>姿势二:当工具书随查随用</h4>
+  <p>已经上手的人直接按症状跳转:</p>
+  <table>
+    <tr><th>你的情况</th><th>直达章节</th></tr>
+    <tr><td>上电串口全静默,不知道板子死没死</td><td>02(先查跳线)→ 06(JTAG 读 PC 定位)→ 07(对照坑表)</td></tr>
+    <tr><td>网线插了,ping 不通</td><td>01(插对口了吗)→ 07(网卡改名 end0 等坑)</td></tr>
+    <tr><td>想搞懂 BOOT.BIN 每个字节是什么</td><td>02(逐字节格式解析)</td></tr>
+    <tr><td>只想要能抄的构建命令</td><td>04(构建三件套)+ 05(制卡)</td></tr>
+    <tr><td>想知道哪些环节绕不开 Vivado</td><td>03(开源替代分析)</td></tr>
+    <tr><td>板子刷活了,接下来玩什么</td><td>08(路线图)</td></tr>
+  </table>
+
+  <h3>写法约定</h3>
+  <p>为了让代码块"抄了就能用",全册统一以下约定:</p>
+  <ul>
+    <li>代码块里以 <code>#</code> 开头的行是注释,不是要执行的命令;</li>
+    <li>标注<strong>"板上"</strong>的命令,在板子的串口终端里执行;标注<strong>"主机"</strong>的,在你电脑的 Ubuntu 里执行——分清这两边,能避免一半的新手错误;</li>
+    <li>正文里的行号(如 L63)指仓库 <code>code/</code> 下对应源码文件的行号,方便对照;</li>
+    <li>所有路径默认相对于<strong>本手册仓库根目录</strong>(准备清单里 git clone 的目标),涉及绝对路径的命令会在注释里说明。</li>
+  </ul>
+
+  <h3>术语速查</h3>
+  <p>手册里反复出现的几个词,先混个脸熟(详细展开都在第 02 章):</p>
+  <table>
+    <tr><th>术语</th><th>一句话解释</th></tr>
+    <tr><td><strong>PS / PL</strong></td><td>Zynq 的两个世界:PS 是 ARM 双核处理系统(跑 Linux),PL 是 FPGA 逻辑(本手册不碰)</td></tr>
+    <tr><td><strong>BootROM</strong></td><td>芯片出厂固化的第一段代码,上电即跑,负责把 BOOT.BIN 的第一个分区搬进内存</td></tr>
+    <tr><td><strong>FSBL</strong></td><td>First-Stage Boot Loader,一级引导;执行 ps7_init 初始化 DDR/时钟/MIO,是每块板不同的"灵魂"</td></tr>
+    <tr><td><strong>ps7_init</strong></td><td>FSBL 里的数千条寄存器写操作,来自厂商硬件工程——Zynq-7000 没有 pinctrl,引脚复用全靠它</td></tr>
+    <tr><td><strong>BOOT.BIN</strong></td><td>BootROM 认的启动镜像格式:ROM 头 + 镜像头 + 分区头表 + 各分区数据,本手册第 02 章逐字节解剖</td></tr>
+    <tr><td><strong>extlinux / distro boot</strong></td><td>主线 U-Boot 的通用启动机制:扫描启动介质上的 extlinux.conf 决定加载哪个内核——换内核不用重编 U-Boot</td></tr>
+    <tr><td><strong>rootfs</strong></td><td>根文件系统,内核起来后用户看到的世界;我们用 Debian 13 填充它</td></tr>
+    <tr><td><strong>JTAG</strong></td><td>硬件调试接口,能直接读写 CPU 寄存器与内存;板载 FT232H + OpenOCD 即可用,无需 Xilinx 工具</td></tr>
+    <tr><td><strong>XADC</strong></td><td>Zynq 内置的 ADC,测芯片结温与各路电源轨,开箱体检的免费仪表</td></tr>
+  </table>
+
+  <h3>全册目录</h3>
+  <div class="toc">
+    <ul>
+      <li><a href="index.html">00 封面 · 如何使用本手册</a> — 你在这里<br>关键词:定位、读法、术语速查</li>
+      <li><a href="ch1-board.html">01 硬件档案与开箱</a> — 板卡档案表、串口/网络/XADC 开箱体检<br>关键词:CH340、115200、nmcli、XADC</li>
+      <li><a href="ch2-bootchain.html">02 启动链与 BOOT.BIN 格式</a> — BootROM → FSBL → U-Boot → 内核;BOOT.BIN 逐字节解剖<br>关键词:ps7_init、分区头、XOR 校验和</li>
+      <li><a href="ch3-toolchain.html">03 工具链与开源替代</a> — apt 一步到位;哪些环节真的需要 Vivado<br>关键词:交叉编译、开源替代</li>
+      <li><a href="ch4-build.html">04 构建三件套</a> — 主线 U-Boot、Linux 6.18、Debian 13 rootfs<br>关键词:defconfig、设备树、debootstrap</li>
+      <li><a href="ch5-sdcard.html">05 制卡与首次启动</a> — SD 分区、extlinux、第一次登录<br>关键词:FAT32、extlinux.conf、z7nano login</li>
+      <li><a href="ch6-debug.html">06 JTAG 调试方法论</a> — OpenOCD 读 PC,三层定位启动故障<br>关键词:OpenOCD、halt、reg pc</li>
+      <li><a href="ch7-pitfalls.html">07 踩坑大全</a> — 17 个坑按时间线全记录<br>关键词:症状、定位、修复</li>
+      <li><a href="ch8-roadmap.html">08 路线图与附录</a> — 6 个进阶方向、代码索引、阅读地图<br>关键词:FSBL 重编、QSPI、PL 开垦</li>
+    </ul>
+  </div>
+
+  <h3>开始前的三条建议</h3>
+  <div class="box box-know">
+    <div class="box-title">师兄的碎碎念</div>
+    <ul>
+      <li><strong>别跳过开箱体检</strong>:出厂系统不只好玩,它是后面所有排障的"对照组"——厂商 BOOT.BIN 是已知好样本,出厂数据是你的基准线;</li>
+      <li><strong>遇到"没反应"先查物理层</strong>:跳线档位、线材好坏、插没插对口——这三样排除了,再去怀疑软件;手册里每个坑都对应一条"第一反应";</li>
+      <li><strong>随手记现象</strong>:每一步成功时串口长什么样、失败时长什么样,记下来——深夜排雷时,这些记录就是你的证据链。</li>
+    </ul>
+  </div>
+
+  <h3>学完你能得到什么</h3>
+  <div class="box box-win">
+    <div class="box-title">收获清单</div>
+    <ul>
+      <li><strong>讲得清 Zynq-7000 四级启动链</strong>(BootROM → FSBL → U-Boot → 内核):每一级在哪、干什么、坏了是什么症状;</li>
+      <li><strong>掌握一套全开源构建流程</strong>:apt 交叉工具链 + 主线 U-Boot + 主线内核 + Debian rootfs,全程不装 Vivado;</li>
+      <li><strong>会写 Zynq 设备树</strong>:串口别名、内存大小、以太网 PHY、USB 模式四处关键改动;</li>
+      <li><strong>看得懂 BOOT.BIN 二进制</strong>:能解析分区头、算 XOR 校验和、写对分区表结束标记;</li>
+      <li><strong>拥有一套 JTAG 分层定位法</strong>:PC 停在哪个区间,就知道卡在 ROM、FSBL、U-Boot 还是内核;</li>
+      <li><strong>对 17 个真实坑免疫</strong>:每个坑都有"症状 → 定位 → 修复"的完整链条,而不是一句"注意别踩"。</li>
+    </ul>
+  </div>
+
+  <p>准备好了?翻到第 01 章,先认识你的板子。</p>
+
+  <div class="pager">
+    <span></span>
+    <a href="ch1-board.html">下一章:硬件档案与开箱 →</a>
+  </div>
+</main>
+</body>
+</html>

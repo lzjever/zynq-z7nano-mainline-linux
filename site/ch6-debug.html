@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 6 章 · JTAG 调试方法论 — Zynq Z7-Nano 主线 Linux 实战手册</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand">
+    <span class="chip">ZYNQ · MAINLINE</span>
+    <h1>Z7-Nano 主线 Linux</h1>
+    <p>从开箱到自主启动的完整实战</p>
+  </div>
+  <nav>
+    <a href="index.html"><span class="num">00</span>封面 · 如何使用本手册</a>
+    <a href="ch1-board.html"><span class="num">01</span>硬件档案与开箱</a>
+    <a href="ch2-bootchain.html"><span class="num">02</span>启动链与 BOOT.BIN 格式</a>
+    <a href="ch3-toolchain.html"><span class="num">03</span>工具链与开源替代</a>
+    <a href="ch4-build.html"><span class="num">04</span>构建三件套</a>
+    <a href="ch5-sdcard.html"><span class="num">05</span>制卡与首次启动</a>
+    <a href="ch6-debug.html" class="active"><span class="num">06</span>JTAG 调试方法论</a>
+    <a href="ch7-pitfalls.html"><span class="num">07</span>踩坑大全</a>
+    <a href="ch8-roadmap.html"><span class="num">08</span>路线图与附录</a>
+  </nav>
+  <footer>硬件:MicroPhase Z7-Nano R20 · XC7Z020<br>软件:主线 U-Boot · Linux 6.18 · Debian 13<br>知识共享,踩坑有痕</footer>
+</aside>
+<main class="main">
+  <div class="chapter-tag">CHAPTER 06</div>
+  <h2 class="title">JTAG 调试方法论</h2>
+  <p class="subtitle">串口只会沉默,JTAG 会回答——把"猜谜调试"升级为"显微镜调试"。</p>
+
+  <div class="box box-step">
+    <div class="box-title">本章你将学到</div>
+    <ul>
+      <li>为什么 JTAG 能"不动一根线、不断电"就定位启动失败;</li>
+      <li>OpenOCD 的 4 行配置、连接验证与 targets 输出解读;</li>
+      <li>三板斧 halt / reg pc / resume 与内存取证 mdw;</li>
+      <li>PC 值诊断速查表 + 反汇编定位工作流(0x5364 自旋真实案例);</li>
+      <li>灌注救援术:FSBL 初始化 DDR 后直接灌 U-Boot 起飞;</li>
+      <li>分层定位哲学:一个症状、三种病因、一条证据链;</li>
+      <li>三大必知坑:cpu1 看戏、OCM 重映射、JTAG 状态变脏——以及各自的中招信号。</li>
+    </ul>
+  </div>
+
+  <h3>6.1 为什么 JTAG 是"核武器"</h3>
+  <p>深夜,你把亲手打包的 BOOT.BIN 拷进 SD 卡,插卡、上电——串口一片死寂。这一幕不是假设,是本项目排雷之夜的真实开场。</p>
+  <p>此刻你手里攥着一把候选病因:</p>
+  <ul>
+    <li>SD 卡坏了?分区没格对?</li>
+    <li>跳线没在 SD 档?</li>
+    <li>FSBL 根本没跑起来?</li>
+    <li>FSBL 跑了,但 U-Boot 炸了?</li>
+    <li>还是干脆串口线接触不良,系统其实在正常启动?</li>
+  </ul>
+  <p>每验证一个猜想,就要改一次卡、换一次线、重新上电一次。这就是<strong>猜谜调试</strong>:一步实验只能排除一个候选,而候选有七八个,大多数实验还什么信息都给不出。更糟的是,这些候选横跨物理层(线材、跳线)、格式层(BOOT.BIN 字段)、软件层(FSBL/U-Boot 本体)——单靠串口这一条观察通道,你根本无从下手。</p>
+  <p>JTAG 是芯片出厂就固化的调试端口:它的访问权限比任何软件都底层,BootROM 拦不住它,系统跑飞也甩不掉它。它给你两样串口永远给不了的东西——<strong>暂停权</strong>(随时冻结 CPU)和<strong>读取权</strong>(任意寄存器、任意内存)。</p>
+  <p>有了这两样权限,游戏直接被掀桌:</p>
+  <div class="box box-know">
+    <div class="box-title">核武器级能力</div>
+    <p><strong>不动一根线、不断电、不重刷任何东西,直接暂停 CPU,问它"你现在在哪"。</strong></p>
+    <p>CPU 会诚实地交出程序计数器(PC)——它此刻是在 BootROM 的错误循环里、在 FSBL 的自旋里、还是在 U-Boot 里欢快地跑着,一个 32 位数字全部说清。</p>
+    <p>被询问的一方无法说谎,也无法拒绝回答——这就是"显微镜"的含义:看到的即事实。</p>
+  </div>
+  <p>两种调试方式的差距,可以用一张表说清——左列的每一种代价,当晚都真实付过:</p>
+  <table>
+    <tr><th>维度</th><th>猜谜调试(改卡重试)</th><th>显微镜调试(JTAG)</th></tr>
+    <tr><td>信息来源</td><td>症状(串口有没有输出)</td><td>CPU 现场寄存器、内存</td></tr>
+    <tr><td>一轮实验的信息量</td><td>一比特:有 / 没有</td><td>一个完整现场:PC + 任意内存</td></tr>
+    <tr><td>对现场的干扰</td><td>每次都要重刷重上电</td><td>零:暂停、问话、放行</td></tr>
+    <tr><td>候选病因的处理</td><td>逐个排除,指数级耗时</td><td>一次定位到层,层内再查</td></tr>
+  </table>
+  <p>当晚的实战里,这三个能力先后救场。按出场顺序,JTAG 扮演了三个角色:</p>
+  <ul>
+    <li><strong>诊断医生</strong>:halt + <code>reg pc</code>,一眼看出系统"活到了启动链的哪一层";</li>
+    <li><strong>现场法医</strong>:<code>mdw</code> 读任意寄存器与内存——BOOT_MODE、FSBL 全局变量,证据直接从现场提取,而不是从症状反推;</li>
+    <li><strong>救援队</strong>:<code>load_image</code> 直接灌注二进制,绕过损坏环节把系统救活(6.7 节)。</li>
+  </ul>
+  <div class="box box-know">
+    <div class="box-title">零 Xilinx 工具</div>
+    <p>整套 JTAG 排雷只用了 apt 一行装上的 OpenOCD(第 3 章),通过板载 FT232H 适配器驱动 Zynq 的 JTAG 链——Zynq-7000 的目标定义(<code>target/zynq_7000.cfg</code>)是 OpenOCD 自带的。整晚没有启动过一次 Vivado,JTAG 调试是完全开源的一环(第 3 章的替代方案表)。</p>
+  </div>
+
+  <h3>6.2 OpenOCD 上手</h3>
+  <h4>适配器认知</h4>
+  <p>Z7-Nano 板载一颗 FT232H,USB VID:PID 为 <code>0403:6014</code>,接到 type-C 的"JTAG"口。</p>
+  <div class="box box-know">
+    <div class="box-title">适配器是什么</div>
+    <p>JTAG 是芯片侧的四根信号线(TCK/TDI/TDO/TMS),电脑侧是 USB——中间需要一颗桥接芯片做协议转换,这就是"适配器"。FT232H 是 FTDI 出品的 USB 多协议桥,OpenOCD 对它支持成熟。后面配置里用的 <code>um232h.cfg</code> 对应 FTDI 官方 UM232H 评估模块:同款芯片、同 VID:PID、同引脚布局,所以拿它驱动板载 FT232H 完全成立。</p>
+  </div>
+  <p>适配器认对了,连接就成功了一半。剩下两个细节先记牢:</p>
+  <ul>
+    <li>板上两个 type-C 口(<code>UART</code> 和 <code>JTAG</code>)<strong>都能供电</strong>——VBUS 经 OR 二极管汇到主 5V,实测单 UART 口供电可完整跑 Linux;但只有"JTAG"口连到调试链;</li>
+    <li>插上后 <code>lsusb</code> 能看到 <code>0403:6014</code> 即物理就绪,Ubuntu 自带驱动,无需额外安装。如果 lsusb 里都看不到,先换线换口——USB 层不通,谈不上 JTAG:</li>
+  </ul>
+  <pre><code><span class="k">lsusb</span> | grep 0403:6014
+<span class="c"># Bus 001 Device 005: ID 0403:6014 Future Technology Devices ... FT232H</span></code></pre>
+  <h4>配置文件:4 行讲完</h4>
+  <p>OpenOCD 的配置永远是两段式:<strong>适配器怎么接</strong>(interface/)+ <strong>目标芯片是什么</strong>(target/)。前者描述你手里那根 USB 转接线,后者描述你要调试的 SoC——两者解耦,换板子只换 target,换适配器只换 interface。Z7-Nano 的配置两段各占一半,正好 4 行:</p>
+  <pre><code><span class="c"># code/openocd-z7nano.cfg — 全部配置,仅此 4 行</span>
+<span class="k">source</span> [find interface/ftdi/um232h.cfg]  <span class="c"># FT232H:VID:PID 0403:6014</span>
+                                        <span class="c"># 引脚映射 AD0=TCK AD1=TDI AD2=TDO AD3=TMS</span>
+<span class="k">adapter speed</span> 2000                     <span class="c"># 接口时钟 2 MHz</span>
+<span class="k">transport select</span> jtag                 <span class="c"># Zynq-7000 走 JTAG(不是 SWD)</span>
+<span class="k">source</span> [find target/zynq_7000.cfg]     <span class="c"># OpenOCD 自带:PL tap + ARM DAP + 双 Cortex-A9</span></code></pre>
+  <ul>
+    <li><strong><code>interface/ftdi/um232h.cfg</code></strong>:
+      FTDI 家族里 UM232H 模块的配置,与板载 FT232H 同芯片同 VID:PID,所以直接拿来用。
+      它告诉 OpenOCD"适配器的哪根线当哪个 JTAG 信号"——AD0=TCK、AD1=TDI、AD2=TDO、AD3=TMS,
+      信号映射错了后面全部白搭;</li>
+    <li><strong><code>adapter speed 2000</code></strong>:
+      适配器与目标芯片之间的 JTAG 时钟,2 MHz——本板的实测稳定值;</li>
+    <li><strong><code>transport select jtag</code></strong>:
+      选定 JTAG 传输(Zynq-7000 的调试口就是 JTAG,不是 SWD——SWD 是 Cortex-M 阵营的常见配置);</li>
+    <li><strong><code>target/zynq_7000.cfg</code></strong>:
+      OpenOCD 内置的 Zynq-7000 目标描述——声明链上的 tap 与调试端口(DAP),
+      并创建两个 Cortex-A9 调试目标,名字分别是 <code>zynq.cpu0</code> 和 <code>zynq.cpu1</code>。
+      这两个名字马上就是主角。</li>
+  </ul>
+  <h4>连接验证:targets 输出解读</h4>
+  <p>配置写好,先别急着调试,花 30 秒确认链路真的通:</p>
+  <pre><code><span class="k">openocd</span> -f openocd-z7nano.cfg -c <span class="s">"init"</span> -c <span class="s">"targets"</span> -c <span class="s">"shutdown"</span></code></pre>
+  <p><code>targets</code> 会列出 JTAG 链上的所有目标。输出里值得看三件事:</p>
+  <ol>
+    <li><strong>能列出目标、IdCode 读得出来</strong>——USB、适配器、JTAG 链物理上全通。
+      如果这一步就报错,先查线、查口(是不是插到了 UART 口),别急着怀疑软件;</li>
+    <li><strong>两个 A9 目标 <code>zynq.cpu0</code> / <code>zynq.cpu1</code></strong>,
+      以及各自的状态(running = 系统在跑,halted = 已被抓停)——这是接下来所有操作的对象;</li>
+    <li><strong>链上还有 PL 侧的 tap</strong>——Zynq 的 PS 与 PL 共享一条 JTAG 链,
+      扫到 PL 的 tap 是正常现象,不是错误,忽略即可。</li>
+  </ol>
+  <div class="box box-warn">
+    <div class="box-title">连不上时,按这个顺序排查</div>
+    <ol>
+      <li><code>lsusb</code> 里有没有 <code>0403:6014</code>?没有 → USB 层问题:换线、换电脑口;</li>
+      <li>type-C 是不是插在"JTAG"口?UART 口只通串口芯片,不通 JTAG 链;</li>
+      <li>板子有没有上电?两个 type-C 都能供电,但拔干净重插一次最稳;</li>
+      <li>以上都好,才轮到怀疑 cfg——但只有 4 行的配置,出错余地不大。</li>
+    </ol>
+    <p>排查顺序的原则:先物理后软件,先简单后复杂——和后面 6.8 的分层定位是同一个思路。</p>
+  </div>
+  <h4>两种驱动方式</h4>
+  <ul>
+    <li><strong>命令串联</strong>(本章主用):
+      每次操作都是一条完整命令 <code>openocd -f cfg -c ... -c "shutdown"</code>,
+      好处是可以固化成脚本反复执行——排雷一晚你会跑它几十次;</li>
+    <li><strong>常驻会话</strong>:
+      启动 <code>openocd -f cfg</code> 让它挂着,另开终端 <code>telnet localhost 4444</code>
+      进交互提示符逐条敲命令,适合反复试探的探索阶段。</li>
+  </ul>
+  <p>两种方式命令完全相同,下文统一按命令串联写——即都包在 <code>openocd -f cfg -c "..." -c "..."</code> 的 -c 参数里;若用 telnet 交互,去掉 -c 包装直接输入即可。</p>
+  <div class="box box-step">
+    <div class="box-title">建议的排障节奏</div>
+    <p>每重一次上电,先跑一遍"三板斧"读 PC,把结果记进笔记再继续。一晚上你会积累一串"改了什么 → PC 变成什么"的对应记录——这份记录就是包围圈不断收窄的轨迹,也是本章所有案例的来源。</p>
+  </div>
+
+  <h3>6.3 核心三板斧:halt / reg pc / resume</h3>
+  <p>调试器的命令手册有几十页,但启动链排雷 90% 的场景只靠三个动作:暂停、问话、放行。一条命令串完成全过程:</p>
+  <pre><code><span class="k">openocd</span> -f openocd-z7nano.cfg \
+  -c <span class="s">"init"</span> \
+  <span class="c"># 关键!见 6.4 坑一(续行符后不能有任何字符,注释须独立成行)</span>
+  -c <span class="s">"targets zynq.cpu0"</span> \
+  -c <span class="s">"halt"</span> \
+  -c <span class="s">"reg pc"</span> \
+  -c <span class="s">"resume"</span> \
+  -c <span class="s">"shutdown"</span></code></pre>
+  <p>三个动作各司其职,组合起来就是一次完整的"现场询问":</p>
+  <ul>
+    <li><strong><code>halt</code></strong>:
+      给 CPU 插暂停牌。PC 反映的是"抓住的那一刻"CPU 所在的位置——
+      halt 在哪个瞬间,看到的就是哪个瞬间的现场;</li>
+    <li><strong><code>reg pc</code></strong>:
+      读出程序计数器,也就是回答"你在哪"的那个数字。
+      不止能读 pc,<code>reg sp</code>、<code>reg lr</code> 同理,pc 永远是第一步;</li>
+    <li><strong><code>resume</code></strong>:
+      放行,系统继续跑。查完就放,几乎无侵入——被调试的一方根本不知道自己被问过话。</li>
+  </ul>
+  <div class="box box-step">
+    <div class="box-title">采样纪律:halt 两次再看</div>
+    <p>halt → reg pc → resume 之后,隔几秒再 halt → reg pc 一次。<strong>两次 PC 相同</strong>,说明 CPU 卡死在同一处(死循环、错误循环);<strong>两次 PC 不同</strong>且在同一段地址徘徊,说明系统还在跑、只是没到你预期的阶段。一比特的对比,信息量翻倍——它帮你区分"卡死"和"慢",这两种情况的下一步完全不同。</p>
+  </div>
+  <p>顺带一提:<code>reg</code> 不带参数会列出 CPU 的全部寄存器(r0–r12、sp、lr、cpsr……),halt 之后整个 CPU 状态尽收眼底;排雷时先看 pc,需要更细的现场再展开全览。</p>
+  <p>OpenOCD 当然还有断点、单步等完整调试功能,但启动链排雷用不到那么细——三板斧 + mdw 已经覆盖九成场景。</p>
+  <h4>mdw:读寄存器与内存</h4>
+  <p>halt 之后,<code>mdw</code>(memory display word)可以读任意物理地址——这是"现场取证"的主力。地址从哪来?两条路:硬件寄存器地址查 Zynq-7000 技术参考手册(UG585);软件变量地址(比如下面的 PartitionCount)从 ELF 符号表来——就是 6.6 节那套 nm 的用武之地:</p>
+  <pre><code><span class="k">mdw</span> 0xF800025C    <span class="c"># BOOT_MODE 寄存器 → 读回 0x00000005</span>
+<span class="k">mdw</span> 0x1AC38       <span class="c"># FSBL 全局变量 PartitionCount</span></code></pre>
+  <p>两个经典应用:</p>
+  <ul>
+    <li><strong>BOOT_MODE @ 0xF800025C</strong>:
+      SLCR 里的启动模式寄存器,读回 <strong>5 表示跳线在 SD 档</strong>。
+      串口全静默时,这一刀切开两种世界——连启动介质都找不到(去查跳线),
+      还是找到了但镜像有问题(去查 BOOT.BIN)。寄存器不会撒谎,跳线不会伪装;</li>
+    <li><strong>PartitionCount @ 0x1AC38</strong>:
+      FSBL 扫描分区表后数出的分区数。我们曾被"分区表结束标记"坑过(第 7 章坑 11(原 #10)):
+      FSBL 数出 3 个分区、把垃圾当 p3 加载——不用猜,mdw 一读便知。</li>
+  </ul>
+  <p><code>reg pc</code> 告诉你"死在哪",<code>mdw</code> 告诉你"死前现场留下了什么"——两者配合,大部分静默故障都能定位到具体环节。</p>
+
+  <h3>6.4 三大必知坑</h3>
+  <p>JTAG 命令本身 10 分钟就能学会,但下面三个坑不知道,每一分钟都在被误导。它们的共同点是:<strong>不报错,只会让你的结论悄悄变错</strong>——你看到的是一个真实但被误读的现场。</p>
+  <div class="box box-warn">
+    <div class="box-title">坑一:默认目标是 cpu1,而它一直在看戏</div>
+    <p>OpenOCD 对 zynq_7000 的默认目标是 <strong>1 号核</strong>。而 FSBL 的第一条代码就在问"我是几号核",非 0 号核会直接进 <code>EndlessLoop0</code> 原地看戏——这个分工是 Zynq 双核启动的既定设计,1 号核生来就是观众。</p>
+    <p>如果你 halt 的是 cpu1,你会看到一个核永远停在同一个循环里,从而得出"系统死了"的错误结论——真正干活的 cpu0 还在跑。</p>
+    <p><strong>必须显式 <code>targets zynq.cpu0</code></strong>。中招信号:halt 后 PC 值永远不变,板子换什么状态读出来都一样。自检方法:跑一次 <code>targets</code>,看当前选中的目标是不是 <code>zynq.cpu0</code>。</p>
+  </div>
+  <div class="box box-warn">
+    <div class="box-title">坑二:OCM 已被 BootROM 重映射到 0x0</div>
+    <p>FSBL 运行在 OCM 里,手册地址是 0xFFFC0000;但上电后 BootROM 已把 OCM <strong>重映射到 0x0</strong>。JTAG 灌注 FSBL 要用地址 <strong>0x0</strong>——写 0xFFFC0000 会得到数据中止(data abort)。</p>
+    <p>中招信号:load_image 后 resume,PC 立刻跳进异常向量,系统状态反而更糟。</p>
+  </div>
+  <div class="box box-warn">
+    <div class="box-title">坑三:跑飞的代码会把 JTAG 状态搞脏</div>
+    <p>目标板上的代码如果跑飞(加载了垃圾分区、跳到非法地址),调试逻辑本身可能进入不可靠状态:halt 抓不住、寄存器读出乱码。</p>
+    <p>此时最干净的做法是<strong>重新上电</strong>,让芯片从 BootROM 重来,JTAG 链也随之回到初始状态;重上电同时把 OCM、外设状态一起复位,现场彻底归零。排雷一晚,重上电是家常便饭——它会重置现场,但你的知识和日志都还在。</p>
+    <p>中招信号:命令莫名报错、读数前后矛盾,而你的操作明明和刚才成功的那次一模一样。</p>
+  </div>
+
+  <h3>6.5 PC 值诊断速查表</h3>
+  <p>halt + reg pc 之后拿到一个 32 位数字,拿它对这张表——整晚排雷沉淀下来的"翻译器"。五个值,五种命运,覆盖了当晚出现过的全部 PC 读数:</p>
+  <table>
+    <tr><th>PC</th><th>含义</th></tr>
+    <tr><td><code>0xFFFFFFxx</code>(两核都在)</td><td>卡在 BootROM:启动失败 / 镜像被拒收</td></tr>
+    <tr><td><code>0x5364</code>(FSBL 内,自旋 <code>b 5364</code>)</td><td>FsblHookFallback:FSBL 加载 / 交接失败</td></tr>
+    <tr><td><code>0x04000000</code>–<code>0x040FFFFF</code></td><td>我们的 U-Boot 在跑(TEXT_BASE=0x04000000)</td></tr>
+    <tr><td><code>0x1FFxxxxx</code>(DDR 顶端)</td><td>U-Boot 已完成 relocation,活着</td></tr>
+    <tr><td><code>0xC0xxxxxx</code></td><td><strong>Linux 内核虚拟地址,内核在跑!</strong></td></tr>
+  </table>
+  <p>读表提示:这些值看的是"高位的模式"——0xFFFFFFxx 的低两位会变(实测 0xFFFFFF34),0x1FFxxxxx、0xC0xxxxxx 的低位同样在变;对号入座看的是前缀,不是精确值。</p>
+  <p>用这张表之前,先明确一个前提——<strong>halt 拿到的 PC 是"当前瞬间"的现场</strong>,读数的含义取决于系统此刻该在哪:</p>
+  <ul>
+    <li>卡死的系统(错误循环、自旋)在任何时刻 halt,PC 都落在同一个值上,随时可读;</li>
+    <li>正常推进的系统,PC 一直在变——收官状态下的实测节奏是:上电后静默约 3 秒(FSBL 在干活),随后 U-Boot 横幅出现(第 5 章);</li>
+    <li>所以上电三五秒后再 halt,读到的位置才说明"系统停在了哪";刚上电就 halt,大概率只是抓到了正在干活的 FSBL。</li>
+  </ul>
+  <p>逐行展开——每一行都是"看到这个值说明什么 / 下一步做什么":</p>
+  <h4>PC = 0xFFFFFFxx:卡在 BootROM</h4>
+  <p><strong>说明什么</strong>:
+    BootROM 没能完成"读镜像 → 搬 FSBL → 跳转",掉进了自己的错误循环
+    (实测两核都停在 0xFFFFFF34 附近)——连 FSBL 的门都没进。</p>
+  <p><strong>下一步</strong>:</p>
+  <ol>
+    <li><code>mdw 0xF800025C</code> 确认跳线是不是 SD 档——不是 5 就先去掰跳线,别的都不用看;</li>
+    <li>跳线没问题,嫌疑就集中在 BOOT.BIN 本身:ROM 头(魔术字 <code>0xAA995566</code> @0x20)或分区头被拒收;</li>
+    <li>下一步是逐字节对照厂商 BOOT.BIN 的头部找差异(第 4 章的三重验收法)。
+        antmicro mkbootimage 的输出就死在这里(第 7 章坑 10(原 #9))。</li>
+  </ol>
+  <h4>PC = 0x5364:FSBL 的 fallback 自旋</h4>
+  <p><strong>说明什么</strong>:
+    FSBL 活着、跑起来了,但它在加载后续分区或交接跳转时失败,
+    掉进 FsblHookFallback 的死循环——地址 5364 处的指令是 <code>b 5364</code>,跳回自己,原地转圈。</p>
+  <p><strong>下一步</strong>:</p>
+  <ol>
+    <li><code>mdw 0x1AC38</code> 读 PartitionCount——数出 3 个分区?那是分区表结束标记填错(坑 11,原 #10);</li>
+    <li>分区数正常,就核对 p2 分区头的校验和(XOR 而非求和,坑 12(原 #11))和 dest_load 装载地址;</li>
+    <li>两者都对,再怀疑 FSBL 与镜像版本不匹配等更冷门的原因——不过当晚遇到的 0x5364,根源最终都落在前两条里。</li>
+  </ol>
+  <h4>PC = 0x04000000–0x040FFFFF:我们的 U-Boot 在跑</h4>
+  <p><strong>说明什么</strong>:
+    FSBL 成功把 U-Boot 搬进 DDR 并跳了过去,PC 正落在 U-Boot 的 TEXT_BASE 里——
+    启动链前三环(ROM → FSBL → U-Boot)全部打通。顺带还证明了两件事:FSBL 的 ps7_init 是好的(DDR 能用了),
+    p2 分区头里的 dest_load/dest_exec 也填对了。</p>
+  <p><strong>下一步</strong>:
+    如果此时串口仍然静默,该怀疑的就不是启动链,而是串口这条观察通道本身——
+    线材接触不良、工具掉线(坑 3 / 坑 4,原 #12 / #17)。</p>
+  <h4>PC = 0x1FFxxxxx:U-Boot 完成 relocation</h4>
+  <p><strong>说明什么</strong>:
+    U-Boot 把自己搬到 DDR 顶端继续运行(relocation),活得很好——
+    搬家是为了把低地址空间腾出来留给内核加载。
+    接下来该走 distro boot 扫描启动介质上的 <code>/extlinux/extlinux.conf</code> 了。</p>
+  <p><strong>下一步</strong>:
+    检查 SD 卡第一分区有没有 extlinux 目录、conf 里的 kernel/fdt 路径对不对(第 5 章)。</p>
+  <h4>PC = 0xC0xxxxxx:内核在跑!</h4>
+  <p><strong>说明什么</strong>:
+    这是 Linux 内核的虚拟地址空间——内核已经启动了。
+    走到这一步,板子其实没病,"全静默"是你的观察窗口出了问题。</p>
+  <p><strong>下一步</strong>:
+    查串口参数(console=ttyPS0)和串口链路,或者干脆换观察通道(网络)。
+    别再折腾启动链了——方向错了,越努力越远。</p>
+  <div class="box box-know">
+    <div class="box-title">这张表的本质:启动链进度条</div>
+    <p>启动链的每一环在地址空间里各有领地:BootROM 在 0xFFFFFFxx、FSBL 在 OCM(低地址)、U-Boot 在 0x04000000 起步再迁到 0x1FFxxxxx、内核在 0xC0xxxxxx。PC 落在哪块领地,就说明系统冲过了它前面的所有关卡——一个 32 位数字,就是整条启动链的进度条。</p>
+  </div>
+  <p>知道"死在哪"已经解决一半问题;想再进一步——"死在哪行代码"——就要请出反汇编。</p>
+
+  <h3>6.6 反汇编定位:从 PC 到函数名</h3>
+  <p>PC 给了地址,但"0x5364 是哪行代码"还差两步翻译。先交代一件事:<strong>反汇编要对 ELF 做,不是对烧进镜像的平铺 bin 做</strong>——ELF 里才有符号表;objcopy 拍平成 bin 的那一刻,函数名就全被剥掉了,只剩光秃秃的字节。</p>
+  <ul>
+    <li>FSBL 的 ELF:厂商 demo 包里的 <code>zynq_fsbl.elf</code>(第 2 章提过,FSBL 可直接复用厂商现成版);</li>
+    <li>U-Boot 的 ELF:构建产物之一(第 4 章)——<code>u-boot-dtb.bin</code> 是给 BOOT.BIN 当 p2 的平铺版,<code>u-boot</code> ELF 专门留给 JTAG 调试用。</li>
+  </ul>
+  <p>两份 ELF 就位,nm 和 objdump 出场。</p>
+  <h4>第一步:nm + awk 找符号</h4>
+  <p>列出 ELF 的全部符号、按地址排序,取"地址 ≤ PC 的最后一个"——也就是<strong>包住 PC 的那个函数</strong>:</p>
+  <pre><code><span class="k">arm-linux-gnueabihf-nm</span> fsbl.elf | sort | awk <span class="s">'$1&lt;="00005364"'</span> | tail -1
+<span class="c"># 注:gnueabihf-nm 读裸机 ELF 也没问题(nm 只看符号表不介意 ABI);</span>
+<span class="c"># 真要"编译"裸机代码(第 8 章响亮 FSBL)时才需要 arm-none-eabi 工具链</span>
+<span class="c"># → 输出一个符号行,形如 "00005xxx T FsblHookFallback":PC 落在这个函数里</span></code></pre>
+  <p>拆开看这条管道:</p>
+  <ul>
+    <li><code>nm</code>:列出 ELF 里的全部符号(地址 + 类型 + 名字);</li>
+    <li><code>sort</code>:按地址字符串排序(地址等宽,字典序即数值序);</li>
+    <li><code>awk '$1&lt;="PC值"'</code>:过滤出地址不晚于 PC 的行;</li>
+    <li><code>tail -1</code>:取最后一个——恰好是"包住 PC 的函数"。</li>
+  </ul>
+  <p>四段管道,一行解决"PC 落在哪个函数里";换一个 PC 值,只改引号里的参数。符号行里的大写 T 表示这是一个代码段(text)里的全局符号——函数名都长这样。</p>
+  <h4>第二步:objdump 看指令</h4>
+  <pre><code><span class="k">arm-linux-gnueabihf-objdump</span> -d fsbl.elf | less
+<span class="c"># 全量反汇编进 less 翻页找;嫌麻烦可以直接 grep 定位上下文:</span>
+<span class="k">arm-linux-gnueabihf-objdump</span> -d fsbl.elf | grep -B2 -A4 <span class="s">"5364:"</span>
+<span class="c"># 在输出里会看到:</span>
+ 5364:  eafffffe   b  5364
+<span class="c">#              ↑ 跳转目标 = 自己:原地自旋,什么都不做,挂起等死</span></code></pre>
+  <p><code>b 5364</code> 是一条跳转指令,目标是它自己的地址——一个不干任何事的死循环。FSBL 作者的意图很直白:加载失败又无路可退时,就躺在这里等人来查。</p>
+  <div class="box box-warn">
+    <div class="box-title">前提:ELF 必须和板上跑的是同一份</div>
+    <p>符号定位的准确性完全依赖"反汇编的 ELF = 板上运行的二进制"。拿厂商 demo 包里的 zynq_fsbl.elf 对板上厂商 FSBL、拿自己构建的 u-boot ELF 对自己灌进去的 u-boot-dtb.bin,版本一错位,符号名就是张冠李戴——地址不会骗人,但符号表会。</p>
+  </div>
+  <h4>真实案例:一次完整的定位</h4>
+  <p>工具都齐了,把当晚的实战从头到尾串起来走一遍——每一步的输出都是真实读数:</p>
+  <ol>
+    <li><code>halt</code> + <code>reg pc</code> → PC = <code>0x5364</code>,查速查表:FSBL fallback 自旋;</li>
+    <li><code>nm + awk</code> → 包住 0x5364 的符号是 FsblHookFallback,证实判断;</li>
+    <li><code>objdump -d</code> → 5364 处正是 <code>b 5364</code> 自旋,确认"躺平等查";</li>
+    <li><code>mdw 0x1AC38</code> → PartitionCount = 3(正常应为 2)——FSBL 数出了多余分区,把垃圾当 p3 加载了;</li>
+    <li>结论:分区表结束标记填错(填了全 0xFF,正确应为 15×0 + 0xFFFFFFFF)——直接指向第 7 章坑 11(原 #10);</li>
+    <li>修复并回归:打包器按正确格式重写结束标记,重新生成 BOOT.BIN 制卡上电——静默 3 秒后 U-Boot 横幅出现,闭环。</li>
+  </ol>
+  <p>五步,从"串口静默"走到"具体哪个字段填错",外加第六步回归验证关闭循环。这就是显微镜调试:每一步都有证据,没有一个环节靠猜。</p>
+
+  <h3>6.7 灌注救援术:绕过损坏环节</h3>
+  <p>JTAG 不止能"看",还能"动手"。启动链是流水线:ROM → FSBL → U-Boot,每一环的产出是下一环的运行条件。<strong>某一环坏了?用 <code>load_image</code> 直接把下一环灌进去,跳过它。</strong>这就是灌注救援术——当晚从"全静默"到"系统起飞"的关键转折。</p>
+  <p>最经典的救援场景:BOOT.BIN 打包有问题、FSBL 交接失败,而 DDR 还没初始化——U-Boot 需要 DDR,但没有人替它跑 ps7_init。能不能跳过 FSBL 直接灌 U-Boot?不能:ps7_init 跑过之前 DDR 控制器还没就绪,load_image 写进去的数据无处落地。所以必须分两灌,先借 FSBL 之手把 DDR 拉起来:</p>
+  <div class="box box-step">
+    <div class="box-title">灌注救援,分两步</div>
+    <p><strong>第一灌,借 FSBL 之手初始化 DDR:</strong>把 FSBL 灌进 OCM 并起跑,ps7_init 会用几千条寄存器写把 DDR 时序、时钟树、MIO 复用全部拉好;等 3 秒,抓停。</p>
+    <p><strong>第二灌,U-Boot 进 DDR 起飞:</strong>DDR 已就绪,把 U-Boot 平铺二进制灌到 TEXT_BASE,resume,横幅立刻出现。</p>
+    <p>这也再次印证了第 2 章的结论:Zynq-7000 上 U-Boot SPL 替代不了 FSBL——SPL 不携带 DDR 参数,谁初始化 DDR,谁就是无可替代的第一环。</p>
+  </div>
+  <pre><code><span class="c"># 第一灌:FSBL 进 OCM(注意重映射!地址是 0x0,不是 0xFFFC0000)</span>
+<span class="c"># /tmp/fsbl.bin 来源:厂商 zynq_fsbl.elf 转平铺二进制</span>
+<span class="c"># arm-linux-gnueabihf-objcopy -O binary zynq_fsbl.elf /tmp/fsbl.bin</span>
+<span class="k">load_image</span> /tmp/fsbl.bin 0x0 bin
+<span class="k">resume</span> 0x0
+<span class="k">sleep</span> 3000        <span class="c"># 毫秒;给 ps7_init 留 3 秒</span>
+<span class="k">halt</span>             <span class="c"># 抓停,准备第二灌</span>
+
+<span class="c"># 第二灌:U-Boot 进 DDR(0x4000000 即 0x04000000 = TEXT_BASE)</span>
+<span class="k">load_image</span> u-boot-dtb.bin 0x4000000 bin
+<span class="k">resume</span> 0x4000000  <span class="c"># 起飞:U-Boot 横幅随即出现</span></code></pre>
+  <p>几个参数逐一交代:</p>
+  <ul>
+    <li><code>load_image 文件 地址 bin</code>:把文件按原始二进制(bin)烧到指定物理地址——不带 ELF 解析、不带偏移,灌什么落什么;这正是 FSBL 对分区数据"裸拷贝"的同款语义(第 2 章);</li>
+    <li><code>resume 0x0</code> / <code>resume 0x4000000</code>:resume 后面带地址,表示"从这条地址起跑"(不带地址则从暂停处继续);</li>
+    <li><code>sleep 3000</code>:OpenOCD 的 sleep 单位是<strong>毫秒</strong>,3000 即 3 秒——刚好覆盖 ps7_init 的耗时,给足余量;</li>
+    <li><code>halt</code>:第一灌结束后抓停,一是看看 FSBL 跑到了哪,二是保证第二灌的 load_image 不和 CPU 抢总线。</li>
+  </ul>
+  <p>这十来行命令值得原样存档:它是任何 Zynq-7000 板卡都通用的救援模板,要改的只有两个文件路径。</p>
+  <div class="box box-know">
+    <div class="box-title">灌注的微妙之处</div>
+    <p>第一灌 FSBL 不只是为了"跑一遍启动",而是<strong>借它的 ps7_init 把 DDR 初始化了</strong>。没有 DDR,第二灌的 U-Boot 无处安家。可以绕过一个环节,但绕不过它的副作用——哪个环节产生什么副作用,正是第 2 章启动链知识的用武之地。</p>
+  </div>
+  <p><strong>这段救援在当晚的位置</strong>:BOOT.BIN 全静默、PC 显示 FSBL fallback,镜像肯定有问题——但镜像里 FSBL 是厂商原版,U-Boot 是我们第一次编译的,嫌疑最大的是哪个?改卡重试要十几分钟一轮,灌注只要一分钟。灌注一锤定音:</p>
+  <ul>
+    <li>绕过 BOOT.BIN 打包,把 u-boot-dtb.bin 直接灌进 DDR——U-Boot 横幅立刻打出,extlinux 认卡,内核起飞;</li>
+    <li><strong>U-Boot 本体无罪,问题锁死在 BOOT.BIN 的打包格式上</strong>(后来确实挖出校验和与结束标记两个坑)。</li>
+  </ul>
+  <p>从"全静默"到"系统起飞",JTAG 灌注是当晚的关键转折:它把"整个镜像坏了"这种大而空的绝望,收窄成"某个字段填错了"这种可以动手查的具体问题。</p>
+  <p><strong>灌注术的适用边界</strong>,也要心里有数:</p>
+  <ul>
+    <li>它改变的是"这一轮"的启动路径——板上没落任何持久化痕迹,重新上电后一切照旧(SD 卡里的坏 BOOT.BIN 依然是坏的);</li>
+    <li>它是快速二分法的工具:用来回答"这个部件本身好不好",而不是修复手段;定位到问题后,还是回到构建/打包环节把它真正修好;</li>
+    <li>妙处在于天然的对照实验:灌注用的 u-boot-dtb.bin 和制卡用的<strong>是同一份产物</strong>,同一份文件 JTAG 路径能起飞、SD 卡路径起不来——差异必然出在投递路径(BOOT.BIN 打包)上,嫌疑人当场减半;</li>
+    <li>前提是 JTAG 能 halt 住 CPU——链路本身要先通(6.2 的验证一步都不能省)。</li>
+  </ul>
+  <p>一句话总结灌注术的定位:<strong>它是二分法的手术刀,不是复活的灵药。</strong>当晚真正修好系统的,是之后回到打包器里改对的那两个字节——但让你确信该去哪里改的,是这把刀。</p>
+
+  <h3>6.8 分层定位哲学:证据链思维</h3>
+  <p>回头看"串口静默"这一个症状,当晚至少有三个真凶先后落网:</p>
+  <ol>
+    <li><strong>跳线错</strong> → BootROM 空等,连 FSBL 的门都没进;</li>
+    <li><strong>厂商 FSBL 是哑巴版</strong>(debug 打印被编译关闭)→ 它在干活,但不出声;</li>
+    <li><strong>我们的 BOOT.BIN 坏</strong> → FSBL 数错分区,fallback 自旋。</li>
+  </ol>
+  <p>三种病因,三种修法,互不通用——先确诊、再下药,正是这一章反复强调的次序。</p>
+  <p>同一个症状,病因分布在启动链的每一层——这就是为什么"串口静默"是最难缠的症状:它不指向任何一层。</p>
+  <div class="box box-warn">
+    <div class="box-title">三个真凶里,哑巴 FSBL 最阴险</div>
+    <p>跳线错和镜像坏好歹是"病",哑巴 FSBL 却是"健康的沉默":debug 打印被编译关闭,它一声不吭地把 DDR 初始化、把分区搬运、把控制权交出去,全程不吐一个字。它教会我们一条铁律:<strong>"串口没输出"≠"没在跑"</strong>。多少次你以为系统死了,其实它正忙着干活。</p>
+  </div>
+  <p>JTAG 的价值,正在于每一层都有<strong>可观测点</strong>,不依赖任何一层"愿意说话"。第 2 章讲了启动链每一环的职责,这一章给每一环配上观测点:</p>
+  <table>
+    <tr><th>层</th><th>可观测点</th><th>怎么看</th></tr>
+    <tr><td>BootROM</td><td>PC=0xFFFFFFxx;BOOT_MODE 寄存器</td><td><code>reg pc</code>;<code>mdw 0xF800025C</code>(=5 即 SD 档)</td></tr>
+    <tr><td>FSBL</td><td>PC=0x5364 自旋;PartitionCount</td><td><code>reg pc</code> + 反汇编;<code>mdw 0x1AC38</code></td></tr>
+    <tr><td>U-Boot</td><td>PC 落在 0x04xxxxxx / 0x1FFxxxxx;串口横幅</td><td><code>reg pc</code>;串口监听</td></tr>
+    <tr><td>内核</td><td>PC=0xC0xxxxxx;console 输出</td><td><code>reg pc</code>;串口监听(earlycon)</td></tr>
+  </table>
+  <p>有了观测点,"全静默"就不再是无从下手的黑箱。halt + PC 把排查变成一条直线:</p>
+  <div class="flow">
+    <div class="node"><b>上电,串口全静默</b> → halt cpu0,读 PC</div>
+    <div class="arrow">↓</div>
+    <div class="node">PC = <b>0xFFFFFFxx</b>? → ROM 层:mdw BOOT_MODE 查跳线,再查镜像头</div>
+    <div class="arrow">↓</div>
+    <div class="node">PC = <b>0x5364</b>? → FSBL 层:mdw PartitionCount,查分区头与结束标记</div>
+    <div class="arrow">↓</div>
+    <div class="node">PC = <b>0x04xxxxxx / 0x1FFxxxxx</b>? → U-Boot 活着:查 extlinux、查串口通道</div>
+    <div class="arrow">↓</div>
+    <div class="node">PC = <b>0xC0xxxxxx</b>? → 内核在跑:问题根本不在启动链</div>
+  </div>
+  <p>流程图里每一个分叉,当晚都真实走过一遍——五个 PC 值,对应五次"包围圈收窄"。</p>
+  <p>当晚的整个排雷过程,浓缩成三条<strong>证据链原则</strong>:</p>
+  <ol>
+    <li><strong>先定位层,再定位点</strong>:
+      PC 先告诉你死在启动链哪一层,层内的候选病因才有讨论意义。
+      "串口静默"横跨五层,没有分层就没有定位——
+      跳过分层直接猜具体原因,等于在整栋楼里挨个房间敲门;</li>
+    <li><strong>每个结论配一个独立证据</strong>:
+      说"FSBL 数错分区",就要拿出 mdw 读到的 PartitionCount=3;
+      说"U-Boot 是好的",就要拿出灌注起飞的事实。
+      没有证据的结论只是猜想的换装;</li>
+    <li><strong>观察通道本身也是嫌疑人</strong>:
+      串口静默 ≠ 系统死了——哑巴 FSBL 就是明证。
+      串口这条通道要可靠(<code>code/uart.py</code> 的 listen 模式:
+      上电前就开始守着、设备消失自动重连),
+      JTAG 是你的第二只眼,两条通道交叉验证才闭环。</li>
+  </ol>
+  <p>三条原则,不再多列——原则超过三条就没人记得住。它们共同的底色只有一句话:<strong>让证据说话,别让猜想开车。</strong></p>
+  <p>最后要说明:这套方法不绑定 Zynq。任何 SoC 的 bring-up——只要它的启动链是"ROM → 一级加载器 → 二级加载器 → 内核"——都适用同一套打法:<strong>给每一层找可观测点,用观测结果定层,层内再定点。</strong>变的只是速查表里的地址和寄存器,不变的是证据链思维。</p>
+
+  <div class="box box-win">
+    <div class="box-title">本章小结</div>
+    <ul>
+      <li>JTAG 三角色:诊断(halt + reg pc)、侦查(mdw)、救援(load_image 灌注);</li>
+      <li>配置仅 4 行:<code>um232h.cfg</code> + <code>zynq_7000.cfg</code>,apt 装的 OpenOCD 即可,全程零 Xilinx 工具;</li>
+      <li>三板斧 halt / reg pc / resume;读内存用 mdw——BOOT_MODE @0xF800025C(=5 即 SD 档)、PartitionCount @0x1AC38;</li>
+      <li>三必知:显式 <code>targets zynq.cpu0</code>(默认 cpu1 在看戏)、OCM 重映射后灌 0x0、JTAG 状态脏了就重上电;</li>
+      <li>halt 两次、对比 PC:相同=卡死,不同=还在跑——一比特对比,信息量翻倍;</li>
+      <li>PC 速查:0xFFFFFFxx=BootROM / 0x5364=FSBL fallback / 0x04xxxxxx=U-Boot / 0x1FFxxxxx=已迁移 / 0xC0xxxxxx=内核在跑;</li>
+      <li>反汇编定位:nm+awk 找包住 PC 的符号,再 objdump 看指令——对着 ELF 做,不是平铺 bin;0x5364 自旋案例五步走完;</li>
+      <li>灌注救援:FSBL@0x0 借 ps7_init 初始化 DDR → 再灌 u-boot@0x04000000 直接起飞——当晚从全静默到系统起飞的转折点;</li>
+      <li>哲学:症状 ≠ 病因,同一症状至少三种病因;先定层再定点,每个结论配一个独立证据;</li>
+      <li>这套"给每层找观测点"的打法可迁移到任何 SoC 的 bring-up——变的只是地址,不变的是证据链思维。</li>
+    </ul>
+  </div>
+
+  <div class="pager">
+    <a href="ch5-sdcard.html">← 上一章:制卡与首次启动</a>
+    <a href="ch7-pitfalls.html">下一章:踩坑大全 →</a>
+  </div>
+</main>
+</body>
+</html>

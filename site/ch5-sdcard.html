@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 5 章 · 制卡与首次启动 — Zynq Z7-Nano 主线 Linux 实战手册</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand">
+    <span class="chip">ZYNQ · MAINLINE</span>
+    <h1>Z7-Nano 主线 Linux</h1>
+    <p>从开箱到自主启动的完整实战</p>
+  </div>
+  <nav>
+    <a href="index.html"><span class="num">00</span>封面 · 如何使用本手册</a>
+    <a href="ch1-board.html"><span class="num">01</span>硬件档案与开箱</a>
+    <a href="ch2-bootchain.html"><span class="num">02</span>启动链与 BOOT.BIN 格式</a>
+    <a href="ch3-toolchain.html"><span class="num">03</span>工具链与开源替代</a>
+    <a href="ch4-build.html"><span class="num">04</span>构建三件套</a>
+    <a class="active" href="ch5-sdcard.html"><span class="num">05</span>制卡与首次启动</a>
+    <a href="ch6-debug.html"><span class="num">06</span>JTAG 调试方法论</a>
+    <a href="ch7-pitfalls.html"><span class="num">07</span>踩坑大全</a>
+    <a href="ch8-roadmap.html"><span class="num">08</span>路线图与附录</a>
+  </nav>
+  <footer>硬件:MicroPhase Z7-Nano R20 · XC7Z020<br>软件:主线 U-Boot · Linux 6.18 · Debian 13<br>知识共享,踩坑有痕</footer>
+</aside>
+<main class="main">
+  <div class="chapter-tag">CHAPTER 05</div>
+  <h2 class="title">制卡与首次启动</h2>
+  <p class="subtitle">第 4 章的三件套装进一张 SD 卡,然后见证三十秒——从一片静默到登录提示。</p>
+
+  <p>本章五件事:定好 SD 卡布局、生成 BOOT.BIN、写好 extlinux.conf、用脚本制卡、上电看它跑起来。全程只需要一个 USB 读卡器。第一次制卡建议完整读一遍;以后重制,直接跳 5.5 跑脚本即可。</p>
+
+  <h3>5.1 目标布局:一张卡,两个分区</h3>
+  <p>Zynq 的 SD 启动布局非常朴素:第一个分区 FAT32 给引导文件,第二个分区 ext4 装整个 Debian。目标长这样:</p>
+<pre><code>SD 卡(整卡)
+┌─────────────────────────────┬──────────────────────────────────────┐
+│ p1:512MB FAT32(类型 0x0C)  │ p2:其余全部 ext4                      │
+│ 起始扇区 8192(即 4MB 处)  │ 起始扇区 1056768                     │
+│ 卷标 ZNANOBOOT              │ 卷标 rootfs                           │
+│                             │                                      │
+│  BOOT.BIN     ← ROM+FSBL+U-Boot(5.3 节生成)                     │
+│  zImage                     │  一整棵 Debian 13(第 4.4 节 rootfs) │
+│  zynq-z7-nano.dtb           │  其中 /lib/modules/$KVER/ 是模块树(版本号以你为准,见第 4 章)  │
+│  extlinux/extlinux.conf     │                                      │
+└─────────────────────────────┴──────────────────────────────────────┘
+</code></pre>
+  <p>两个数字解释一下:</p>
+  <table>
+    <tr><th>参数</th><th>值</th><th>为什么</th></tr>
+    <tr><td>p1 起始扇区</td><td>8192(=4MB)</td><td>分区表本身占开头几十个扇区;8192 是传统的安全起点,让分区按 4MB 边界对齐,兼顾兼容性与读写性能</td></tr>
+    <tr><td>p1 大小</td><td>1048576 扇区 × 512B = 512MB</td><td>引导文件总共二十几 MB(BOOT.BIN 十来 MB + zImage 约 11.7MB),512MB 绰绰有余,还留够了以后放多个内核试验的空间</td></tr>
+    <tr><td>p1 类型</td><td>0x0C(FAT32 + LBA)</td><td>Zynq BootROM/U-Boot 认的标准 FAT32 类型</td></tr>
+    <tr><td>p2 起始扇区</td><td>1056768</td><td>8192 + 1048576,紧接 p1 结尾,一个扇区不浪费</td></tr>
+  </table>
+  <p>卡的容量不挑:8GB、16GB、32GB 都行——p2 会自动吃掉全部剩余空间,引导文件在 p1 里怎么都够放。</p>
+  <p>引导文件为什么放 FAT32?因为启动链里每一级都认 FAT——BootROM 内置的是"只够找到 BOOT.BIN 一个文件"的极简只读 FAT(所以文件名、所在分区和目录都是约定死的),U-Boot 则是完整 FAT 驱动,而且 FAT 在 Windows/Linux 上都能直接读写——换内核、改配置,拔卡插电脑就行,不需要任何工具。</p>
+  <p>再从"谁读哪个分区"的角度看一遍这张卡,启动链立刻立体起来:</p>
+  <div class="flow">
+    <div class="node"><b>BootROM + FSBL</b>:在第一 FAT 分区根目录定位 BOOT.BIN 文件,按第 02 章的 BOOT.BIN 格式解析加载</div>
+    <div class="arrow">↓</div>
+    <div class="node"><b>U-Boot</b>:挂 p1(FAT32),读 zImage、dtb 和 extlinux/extlinux.conf</div>
+    <div class="arrow">↓</div>
+    <div class="node"><b>Linux 内核</b>:按 root= 挂 p2(ext4),从此住在 Debian 里</div>
+  </div>
+
+  <h3>5.2 备齐 p1 的启动文件</h3>
+  <p>第 4 章已经把 zImage 和 dtb 拷进了 <code>~/zynq-mainline/sd/boot/</code>,本章再补两样:BOOT.BIN(5.3 节)和 extlinux.conf(5.4 节)。凑齐后 p1 目录结构是:</p>
+<pre><code>~/zynq-mainline/sd/boot/
+├── BOOT.BIN              <span class="c"># 5.3 节生成</span>
+├── zImage                <span class="c"># 第 4.3 节产物</span>
+├── zynq-z7-nano.dtb      <span class="c"># 第 4.3 节产物</span>
+└── extlinux/
+    └── extlinux.conf     <span class="c"># 5.4 节写入</span>
+</code></pre>
+  <p>制卡之前用一条命令自查,四样缺一不可:</p>
+<pre><code>ls -l ~/zynq-mainline/sd/boot/ ~/zynq-mainline/sd/boot/extlinux/
+<span class="c"># 应看到 BOOT.BIN、zImage、zynq-z7-nano.dtb、extlinux/extlinux.conf 四个名字</span></code></pre>
+  <p>四个文件正好对应启动链的接力棒,谁接哪一棒:</p>
+  <table>
+    <tr><th>文件</th><th>接力棒交给谁</th></tr>
+    <tr><td>BOOT.BIN</td><td>BootROM 裸读 → FSBL(初始化硬件)→ U-Boot 起跑</td></tr>
+    <tr><td>extlinux.conf</td><td>U-Boot 的 distro boot 按它决定加载什么</td></tr>
+    <tr><td>zImage + dtb</td><td>U-Boot 装进 DDR 后跳转,交给 Linux 内核</td></tr>
+    <tr><td>(p2 的 rootfs)</td><td>内核挂载,systemd 接最后一棒</td></tr>
+  </table>
+
+  <h3>5.3 生成 BOOT.BIN:make-bootbin.py</h3>
+  <div class="box box-step"><div class="box-title">步骤 · 先备齐厂商物料</div><p>打包器需要一件输入:<strong>厂商原厂 BOOT.BIN</strong>(当模板)。两个来源任选其一:</p>
+<ol><li><strong>出厂 SD 卡</strong>:插到读卡器,拷出来,顺手做个全卡备份更保险:
+<pre><code>mkdir -p ~/zynq-mainline/vendor
+cp /media/$USER/*/BOOT.BIN ~/zynq-mainline/vendor/   <span class="c"># 挂载路径以实际为准</span>
+<span class="c"># 可选的保险:整卡镜像备份(约 10 分钟)</span>
+<span class="c"># sudo dd if=/dev/sdX of=~/factory-sd.img bs=4M status=progress</span></code></pre></li>
+<li><strong>厂商资料包</strong>(向板卡厂商/客服索取;本项目为 Z7-NanoR20-7020-2018.3 系列):其 demo 压缩包里还有现成的 zynq_fsbl.elf 与 hdf(第 6、8 章要用),一并解到 vendor/ 备用:
+<pre><code>7z e 厂商资料包.7z -o~/zynq-mainline/vendor "*zynq_fsbl.elf" "*.hdf"</code></pre></li></ol></div>
+  <p>还记得第 2 章的 BOOT.BIN 布局吗?ROM 头 + 镜像头 + 分区头表 + FSBL 数据,后面才是 U-Boot 分区。我们的策略是<strong>模板复用法</strong>:拿厂商出厂 SD 卡里的 BOOT.BIN,截取前 0x19740 字节充当模板(ROM 头、镜像头、FSBL 分区连同里面的 ps7_init 板级参数,原封不动——FSBL 携带每板不同的硬件参数,能复用就不重编,道理见第 2 章),只把第二分区换成自己编的 u-boot-dtb.bin:</p>
+<pre><code>cd ~/zynq-mainline
+python3 手册仓库路径/code/make-bootbin.py \
+    --template vendor/BOOT.BIN \
+    --uboot    build/uboot/u-boot-dtb.bin \
+    --text-base 0x04000000 \
+    -o sd/boot/BOOT.BIN</code></pre>
+  <p>四个参数:</p>
+  <table>
+    <tr><th>参数</th><th>含义</th></tr>
+    <tr><td><code>--template</code></td><td>厂商原厂 BOOT.BIN(出厂卡 FAT 分区里那份;厂商资料包里也有)——提供 ROM 头 + 能用的 FSBL</td></tr>
+    <tr><td><code>--uboot</code></td><td>我们第 4 章编的平铺二进制 u-boot-dtb.bin</td></tr>
+    <tr><td><code>--text-base</code></td><td>U-Boot 的链接地址 0x04000000,必须与分区头的 dest_load/dest_exec 一致(默认值就是它)</td></tr>
+    <tr><td><code>-o</code></td><td>输出文件,直接落到 sd/boot/ 里</td></tr>
+  </table>
+  <p>脚本跑完先做"自验证"——重读刚写出的分区头,断言 XOR 校验和与结束标记都正确,然后打印一行 OK(字节数取决于你的 U-Boot 大小):</p>
+<pre><code>OK: BOOT.BIN (1217352 字节)  p2=1113096B @0x19740  base=0x04000000</code></pre>
+  <p>看到 OK 就说明格式三要素(平铺 p2、XOR 校验和、15×0 + 0xFFFFFFFF 结束标记)都过关了。为什么这么讲究?第 2 章的血泪考古和第 7 章的 mkbootimage 失败案都是前车之鉴——BootROM 和 FSBL 对格式的挑剔程度远超文档描述,多一道断言多一分安心。</p>
+  <div class="box box-know">
+    <div class="box-title">为什么不用现成的打包工具?</div>
+    <p>社区常用的 antmicro zynq-mkbootimage 我们实测过:它的输出被 BootROM 直接拒收(第 6 章 JTAG 实测 PC 停在 ROM 错误循环);即使过了 ROM 这关,它对 ELF 分区做"节区块编码",与 FSBL 的裸拷贝语义也不相符。这才有了自写打包器。</p>
+    <p>由此沉淀的方法论:自制镜像要过三关——<strong>逐字节对照已知好样本</strong>(厂商 BOOT.BIN)、<strong>解剖器验证</strong>、<strong>真机 JTAG 验收</strong>,三者缺一不可。</p>
+  </div>
+  <p>生成的 BOOT.BIN 直接落在了 sd/boot/ 里(5.2 节的目录就此凑齐);厂商模板建议留个只读副本,以后重打包还要用:</p>
+<pre><code>cp vendor/BOOT.BIN vendor/BOOT.BIN.orig    <span class="c"># 模板留底,永远有退路</span></code></pre>
+  <h3>5.4 extlinux.conf:四行启动菜单</h3>
+  <p>U-Boot 的 distro boot 约定:到各启动介质上找 <code>/extlinux/extlinux.conf</code>。这个文件就是内核启动菜单,我们这份全文只有四行。注意路径和文件名是约定死的,一个字母都不能错(boot.bin 大小写不敏感,但文件名与所在目录一个字母都不能错):</p>
+<pre><code>mkdir -p ~/zynq-mainline/sd/boot/extlinux
+cat &gt; ~/zynq-mainline/sd/boot/extlinux/extlinux.conf &lt;&lt;'EOF'
+<span class="k">label</span> Debian trixie (mainline 6.18) — Z7-Nano
+    <span class="k">kernel</span> /zImage
+    <span class="k">fdt</span> /zynq-z7-nano.dtb
+    <span class="k">append</span> root=/dev/mmcblk0p2 rootwait rw console=ttyPS0,115200 earlycon=cdns,mmio,0xE0000000
+EOF</code></pre>
+  <p>逐行拆解:</p>
+  <table>
+    <tr><th>行</th><th>含义</th></tr>
+    <tr><td><code>label …</code></td><td>菜单标题,只在 U-Boot 列菜单时显示,内容随意</td></tr>
+    <tr><td><code>kernel /zImage</code></td><td>内核镜像路径(相对 FAT 分区根)</td></tr>
+    <tr><td><code>fdt /zynq-z7-nano.dtb</code></td><td>设备树 blob;U-Boot 把它加载后连同内核一起交给内核——就是第 4 章那棵内核版设备树</td></tr>
+    <tr><td><code>append …</code></td><td>内核命令行,追加给内核的启动参数,见下方逐项</td></tr>
+  </table>
+  <p>append 里的每个参数:</p>
+  <ul>
+    <li><code>root=/dev/mmcblk0p2</code>:根文件系统在 SD 卡第二分区;</li>
+    <li><code>rootwait</code>:死等根设备就绪再挂载——SD 的枚举比内核 probe 慢半拍,嵌入式必备,没有它容易卡"Waiting for root device";</li>
+    <li><code>rw</code>:按读写挂载(要写日志、装软件的系统盘当然得读写);</li>
+    <li><code>console=ttyPS0,115200</code>:主控制台走 UART0(uart0 设备节点对应的设备名就是 ttyPS0),115200 波特率;</li>
+    <li><code>earlycon=cdns,mmio,0xE0000000</code>:最早期控制台,专治"内核刚起步就没声音"。</li>
+  </ul>
+  <div class="box box-know">
+    <div class="box-title">earlycon 是什么?</div>
+    <p>内核启动的最早期,串口驱动还没 probe,<code>console=</code> 指定的控制台其实"无字可打"——这段真空期输出全靠 earlycon。它的原理简单粗暴:三要素"驱动名,访问方式,寄存器基址"(cdns = Zynq PS UART 是 Cadence IP,mmio = 直接映射内存,0xE0000000 正是 UART0),不初始化、不 probe,拿到地址直接写寄存器输出。</p>
+    <p>于是内核从解压后的第一条日志就能上串口。若哪天启动卡死,屏幕停在"Starting kernel…"之后再无输出,有没有 earlycon 就是"死在内核前"和"死在内核里"的分界线——再配合第 6 章的 JTAG,几乎没有盲区。</p>
+    <p>一句话记住分工:<code>console=</code> 管"内核起来之后",<code>earlycon=</code> 管"内核起来之前",两个都配上,真空期最短。</p>
+  </div>
+  <p>extlinux 机制的真正威力是<strong>解耦</strong>:以后换内核、改参数,只需改这个文本文件,不用重编 U-Boot、更不用重打 BOOT.BIN。</p>
+  <h3>5.5 制卡:make-sd.sh 逐段讲解</h3>
+  <p>制卡脚本要做的全是危险动作:整盘分区、整盘格式化——所以脚本的前几行反而是全篇最重要的。先看全文:</p>
+<pre><code>#!/bin/bash
+<span class="c"># Z7-Nano 主线 Linux 制卡脚本</span>
+<span class="c"># 用法: sudo ./make-sd.sh /dev/sdX [BOOT.BIN路径]</span>
+<span class="c"># 分区布局: p1=512MB FAT32(引导) p2=剩余 ext4(Debian rootfs)</span>
+set -e
+trap "sudo umount /mnt/sd1 /mnt/sd2 2&gt;/dev/null" EXIT
+
+DISK=$1
+BOOTBIN=$2
+SD_DIR=/home/percy/zynq-mainline/sd
+ROOTFS=/home/percy/zynq-mainline/rootfs
+
+<span class="c"># ---- 安全检查 ----</span>
+[ -b "$DISK" ] || { echo "错误: $DISK 不是块设备"; exit 1; }
+echo "$DISK" | grep -q "nvme" &amp;&amp; { echo "错误: 拒绝操作 NVMe 设备!"; exit 1; }
+RM=$(lsblk -no RM "$DISK" | head -1 | tr -d ' ')
+[ "$RM" = "1" ] || { echo "错误: $DISK 不是可移动设备(以防误伤系统盘)"; exit 1; }
+echo "&gt;&gt;&gt; 目标: $DISK ($(lsblk -no SIZE,MODEL "$DISK" | head -1)),5 秒后开始,Ctrl-C 取消"
+sleep 5
+
+<span class="c"># ---- 分区 ----</span>
+sudo sfdisk --wipe always "$DISK" &lt;&lt;EOF
+label: dos
+start=8192, size=1048576, type=c
+start=1056768, type=83
+EOF
+sudo partprobe "$DISK" || true
+sleep 1
+P1="${DISK}1"; P2="${DISK}2"
+
+<span class="c"># ---- 格式化 ----</span>
+sudo mkfs.vfat -F 32 -n ZNANOBOOT "$P1"
+sudo mkfs.ext4 -q -L rootfs "$P2"
+
+<span class="c"># ---- 拷贝 ----</span>
+sudo mkdir -p /mnt/sd1 /mnt/sd2
+sudo mount "$P1" /mnt/sd1 &amp;&amp; sudo mount "$P2" /mnt/sd2
+sudo cp -r $SD_DIR/boot/. /mnt/sd1/
+if [ -n "$BOOTBIN" ]; then
+    sudo cp "$BOOTBIN" /mnt/sd1/BOOT.BIN &amp;&amp; echo "BOOT.BIN 已装入"
+else
+    echo "警告: 未提供 BOOT.BIN(第二参数),此卡无法启动!"
+fi
+sudo cp -a $ROOTFS/. /mnt/sd2/
+sudo rm -f /mnt/sd2/usr/bin/qemu-arm-static
+
+<span class="c"># ---- 收尾 ----</span>
+sync
+sudo umount /mnt/sd1 /mnt/sd2
+echo "=== 制卡完成 ==="
+</code></pre>
+
+  <h4>第一段:安全检查——脚本的第一美德</h4>
+  <p>任何"写整盘"的脚本都该这样开头。三道闸,一道比一道重要:</p>
+  <ul>
+    <li><strong>必须是块设备</strong>(<code>[ -b ]</code>):参数传个普通文件路径就直接出局;</li>
+    <li><strong>拒绝 NVMe</strong>:系统盘十有八九挂在 NVMe 上,点名拒绝——哪怕后面检查有疏漏,你的系统盘也活下来了;</li>
+    <li><strong>要求 RM=1</strong>:lsblk 的 Removable 标志,USB 读卡器是 1,内置硬盘/NVMe 是 0。双保险,专防"/dev/sdb 打成 /dev/nvme0n1"这种手滑;</li>
+    <li>最后 <code>sleep 5</code>:打印目标盘的容量和型号,给你 5 秒反悔的窗口。</li>
+  </ul>
+  <p>里面还藏着一个调试半晚上的小坑:<code>lsblk -no RM</code> 的输出带前导空格,直接 <code>[ "$RM" = "1" ]</code> 永远不相等,必须 <code>tr -d ' '</code> 剥掉。shell 脚本的经典暗礁。</p>
+  <div class="box box-warn">
+    <div class="box-title">动手前改两处</div>
+    <p>脚本顶部的 <code>SD_DIR</code> 和 <code>ROOTFS</code> 是写死的绝对路径——为什么不用 ~?因为脚本要 sudo 运行,sudo 下 ~ 会展开成 /root 而不是你的家目录(第 7 章的坑)。用之前先改成你的实际路径。</p>
+  </div>
+  <h4>第二段:分区与格式化</h4>
+  <p><code>sfdisk</code> 从标准输入读分区表描述,三行搞定 5.1 节的布局:</p>
+  <ul>
+    <li><code>label: dos</code>:传统 MBR 分区表(Zynq 这一级的启动固件不挑,GPT 没必要);</li>
+    <li><code>start=8192, size=1048576, type=c</code>:p1,起始/大小/类型全来自 5.1 节的表;</li>
+    <li><code>start=1056768, type=83</code>:p2 从这里到卡尾。这里有个坑:<strong>第二分区必须显式写 start</strong>——不写的话 sfdisk 会用默认对齐值,给你切出一个 3MB 的怪分区,rootfs 当场装不下;</li>
+    <li><code>--wipe always</code>:抹掉盘上所有旧签名(旧文件系统超级块等),避免内核拿着旧残留闹鬼;</li>
+    <li><code>partprobe</code> + <code>sleep 1</code>:让内核重读分区表,并给 udev 一点反应时间,免得下一行 mkfs 找不到新分区。</li>
+  </ul>
+  <p>格式化则是一行一个分区:FAT32 卷标 ZNANOBOOT,ext4 卷标 rootfs。卷标是给"人"看的——以后 lsblk 一眼认出这张卡。</p>
+
+  <h4>第三段:拷贝与收尾</h4>
+  <p>拷贝这段有一个反直觉的知识点,值得单独讲:</p>
+<pre><code>sudo cp -r $SD_DIR/boot/. /mnt/sd1/    <span class="c"># FAT 分区:必须 -r,不能 -a!</span>
+sudo cp -a $ROOTFS/. /mnt/sd2/         <span class="c"># ext4 分区:必须 -a,不能省!</span></code></pre>
+  <p><strong>为什么 FAT 分区不能用 <code>cp -a</code></strong>:-a 表示"尽量保留一切"(属主、权限、时间戳),而 FAT 文件系统压根没有属主和 POSIX 权限的概念——cp 尝试保留属主必然失败,报"无法保留所有权";脚本又开着 <code>set -e</code>,任何非零返回直接中止。所以对 FAT 用朴素的 <code>-r</code>。反过来,ext4 分区必须用 <code>-a</code>:rootfs 里有一堆权限敏感的文件(比如 sudo 的 setuid 位),丢了权限系统照样出问题。</p>
+  <p>收尾三件事:<code>rm -f qemu-arm-static</code> 是把第 4 章的 qemu 解释器最后清一次场(双保险);<code>sync</code> 把页缓存全部落盘——没有它,拔卡瞬间的数据可能还悬在内存里;开头的 <code>trap … EXIT</code> 保证脚本无论正常结束还是中途爆错,挂载点都会被卸载。</p>
+
+  <h4>贯穿全文的两行防御</h4>
+  <p>值得单独拎出来讲的是脚本开头两行,它们定义了整个脚本的"失败哲学":</p>
+<pre><code>set -e                                <span class="c"># 任何一步失败,立刻中止</span>
+trap "sudo umount /mnt/sd1 /mnt/sd2 2&gt;/dev/null" EXIT   <span class="c"># 无论如何退出都卸载</span></code></pre>
+  <p><code>set -e</code> 的意思是:制卡这种多步操作,<strong>半途失败比失败本身更糟</strong>——一张拷了一半的卡插上板子,症状能把人引到九霄云外去。宁可当场停下来,把错误亮在脸上。<code>trap … EXIT</code> 则兜住另一头:即使中止,挂载点也不会遗留,下次重跑不会撞上"目标正忙"。写任何危险脚本,建议把这六行(set -e、trap、安全检查、sleep)当模板抄。</p>
+
+  <h4>跑起来</h4>
+  <p>讲解完毕,实战两步。先确认设备名:</p>
+<pre><code>lsblk -o NAME,SIZE,RM,MODEL,TRAN
+<span class="c"># 插上读卡器再跑一次,多出来的那个就是它;RM 应为 1,TRAN 应为 usb</span></code></pre>
+<pre><code>sudo ./make-sd.sh /dev/sdb ~/zynq-mainline/sd/boot/BOOT.BIN
+<span class="c"># 输出 "BOOT.BIN 已装入" 和 "=== 制卡完成 ===" 即成功</span></code></pre>
+  <p>看到"制卡完成"再拔卡——脚本退出前已完成 sync 和 umount,放心。整个过程就是把卡插读卡器、跑一条命令、等它跑完,越简单的动作越要克制住"中间拔卡看看"的冲动。</p>
+  <p>中途报错也不慌:脚本是"从头再来"型幂等设计,重跑一遍会重新分区、重新格式化、重新拷贝,不会因为上次的半成品而出错。</p>
+  <h3>5.6 首次启动:预期时间线</h3>
+  <p>卡从读卡器拔下来,插到<strong>板上</strong>的 SD 卡槽。上电之前,按这个清单过一遍:</p>
+  <div class="box box-step">
+    <div class="box-title">上电前检查清单</div>
+    <ol>
+      <li>SD 卡插在板上的卡槽(不是电脑读卡器),金手指朝向正确、插到底;</li>
+      <li>启动跳线切到 <strong>SD 档</strong>(BOOT_MODE 读回应为 5;JTAG 档会让 BootROM 空等,症状就是全静默——最经典的坑);</li>
+      <li>type-C "UART" 口连电脑(注意不是 JTAG 口);插上它板子就已经通电了——两个 type-C 口的 VBUS 经 OR 二极管汇到主 5V,<strong>任一口可独立供电</strong>,实测单 UART 口就能完整跑 Linux;</li>
+      <li>电脑上<strong>先启动串口监听</strong>(手册配套的 uart.py:python3 code/uart.py listen 120;用别的工具也行,115200 8N1、无流控);</li>
+      <li>监听窗口就位后再上电。</li>
+    </ol>
+  </div>
+  <div class="box box-warn">
+    <div class="box-title">两个串口铁律</div>
+    <p><strong>监听器必须在上电前启动。</strong>启动最初几秒的输出(哪怕是"静默"本身)是判断卡在哪一级的关键证据;事后才开监听,就永远错过了。</p>
+    <p><strong>拔插 type-C 会让 /dev/ttyUSB 消失。</strong>CH340 会从 USB 总线上"干净地"掉线,监听工具直接崩溃——所以工具必须能自动重连(uart.py 就为此而写);另外 type-C 线材接触不良也会造成同样现象且 dmesg 毫无线索,备一根好线,先怀疑线再怀疑软件。</p>
+  </div>
+  <p>然后按下电源。预期的时间线(节选,版本号、时间戳以你的实际克隆为准):</p>
+  <table>
+    <tr><th>上电后</th><th>串口上看到</th><th>幕后发生什么</th></tr>
+    <tr><td>0 ~ 3 秒</td><td>一片静默</td><td>BootROM 校验 BOOT.BIN → FSBL 在 OCM 里跑 ps7_init(DDR/时钟/MIO),再把 U-Boot 搬进 DDR。厂商 FSBL 是哑巴版,debug 打印被编译关掉——<strong>"没输出"不等于"没在跑"</strong></td></tr>
+    <tr><td>约 3 秒</td><td>U-Boot 横幅 + 2 秒倒计时</td><td>u-boot-dtb.bin 在 0x04000000 跑起来;distro_bootcmd 开始扫卡</td></tr>
+    <tr><td>约 5 秒</td><td>Found /extlinux/extlinux.conf</td><td>U-Boot 按 5.4 节的菜单,把 zImage 和 dtb 从 FAT 读进 DDR,跳转</td></tr>
+    <tr><td>5 ~ 28 秒</td><td>内核日志刷屏</td><td>内核初始化:earlycon 与 console 接力,MACB/PHY 起来,udev 把 eth0 改名 end0,systemd 拉起服务</td></tr>
+    <tr><td>约 30 秒</td><td>z7nano login:</td><td>全自主启动完成</td></tr>
+  </table>
+  <p>对着串口读一遍这份"剧本",心里先有"标准答案",首启时才不慌。关键行大概长这样(节选,版本号与时间戳以你的实际构建为准):</p>
+<pre><code>(上电后约 3 秒,串口一片静默 —— FSBL 正在跑 ps7_init、搬 U-Boot,只是不说话)
+
+U-Boot 2026.xx (…)              ← U-Boot 横幅一出,说明 FSBL 已完成使命并交接成功
+
+CPU:   Zynq 7z020
+DRAM:  512 MiB                  ← 我们写的 memory@0 512MB 生效
+MMC:   mmc@e0100000: 0          ← SD 控制器就位
+In:    serial@e0000000          ← 控制台确实在 UART0(0xE0000000)
+Out:   serial@e0000000
+Err:   serial@e0000000
+
+Hit any key to stop autoboot:  2 ← BOOTDELAY=2,别按键,让它自己走
+…
+Found /extlinux/extlinux.conf    ← distro boot 找到我们的菜单
+Retrieving file: /zImage
+Retrieving file: /zynq-z7-nano.dtb
+…
+Starting kernel …               ← 跳进内核
+
+Booting Linux on physical CPU 0x0    ← earlycon 接力,内核立刻开始说话
+Linux version 6.18.0 …
+…(几十页驱动初始化,节选)…
+macb e000b000.ethernet end0: renamed from eth0   ← 铁证:网口改叫 end0
+…
+[  OK  ] Started OpenBSD Secure Shell server.
+
+Debian GNU/Linux 13 z7nano ttyPS0
+
+z7nano login: _                  ← 上电约 30 秒,到位</code></pre>
+  <p>如果时间线在哪一格停住了,别猜——静默的三大真凶(跳线错、FSBL 哑巴、镜像坏)症状一模一样,用第 6 章的 JTAG 看 PC 值分层定位,第 7 章有完整速查表。</p>
+  <p>不接 JTAG 的快速分诊,按"最后看到的输出"对号:</p>
+  <table>
+    <tr><th>最后停在</th><th>最可能的原因</th><th>第一动作</th></tr>
+    <tr><td>完全静默(串口连一个字都没有)</td><td>跳线不在 SD 档 / 串口工具参数错 / 镜像被 BootROM 拒收</td><td>查跳线;确认 115200 8N1;再怀疑 BOOT.BIN(第 6 章验)</td></tr>
+    <tr><td>U-Boot 横幅之后无下文</td><td>BOOT.BIN 里 p2 有问题或 U-Boot 设备树不对</td><td>第 2 章格式检查 + 重打包</td></tr>
+    <tr><td>Found extlinux.conf 之后卡住</td><td>FAT 里的 zImage/dtb 路径或文件不对</td><td>重新挂卡核对文件名,大小写也别错</td></tr>
+    <tr><td>Starting kernel… 之后黑屏</td><td>内核命令行或 dtb 不匹配(console 指错、内存大小错)</td><td>核对 extlinux.conf 的 append 与 dtb</td></tr>
+    <tr><td>内核刷屏中途 panic</td><td>常见 root=/分区错、rootwait 忘加</td><td>读最后一屏错误信息,九成写着答案</td></tr>
+    <tr><td>刷屏结束但 login 不出现</td><td>rootfs 问题:fstab 写错、模块树层级不对</td><td>核对第 4.4 节 fstab 与 /lib/modules 层级</td></tr>
+  </table>
+  <h3>5.7 登录进去:五连验证</h3>
+  <p>在串口里用第 4 章设置的账号登录(root / root),然后按顺序验证五件事——正好覆盖整条启动链。串口是"最后的安全网",ssh 是日常通道:前者永远在(不依赖网络),后者舒服(全速终端、能传文件),两个都通才算真正站稳:</p>
+<pre><code><span class="c"># 1) 跑的是我们自己编的内核吗?</span>
+uname -a
+<span class="c"># 期望:Linux z7nano &lt;你的版本号,手册示例 6.18.0&gt; … armv7l GNU/Linux</span>
+
+<span class="c"># 2) 网口存在吗?叫什么名字?</span>
+ip link
+<span class="c"># 找 end0(4.5 节第二课:为什么不是 eth0)</span>
+
+<span class="c"># 3) IP 配上了吗?(10-eth.network 的静态 IP 应已生效)</span>
+ip addr show end0
+<span class="c"># 期望看到 192.168.1.10/24</span>
+
+<span class="c"># 4) 能通到电脑吗?</span>
+ping -c 3 192.168.1.20
+<span class="c"># 电脑侧先配同网段地址,见下面 nmcli</span>
+
+<span class="c"># 5) 从电脑 ssh 进来(比串口舒服得多)</span>
+<span class="c">#    电脑上执行: ssh root@192.168.1.10,密码 root</span></code></pre>
+  <p>电脑侧(Ubuntu)把有线网卡配到同网段:</p>
+<pre><code>nmcli con add type ethernet ifname enp129s0 con-name fpga-board \
+  ipv4.method manual ipv4.addresses 192.168.1.20/24
+nmcli con up fpga-board
+<span class="c"># ifname 换成你电脑的网卡名(ip link 里查)</span></code></pre>
+  <p>如果你的 rootfs 没装 10-eth.network,也可以在板上手动配,临时救命:</p>
+<pre><code>ip link set end0 up
+ip addr add 192.168.1.10/24 dev end0</code></pre>
+  <div class="box box-warn">
+    <div class="box-title">手动配 IP 的一只暗雷</div>
+    <p>手动 <code>ip addr add</code> 的地址,一次 <code>systemctl restart systemd-networkd</code> 就会被清掉——networkd 一接管,不属于自己的配置一律扫除。改网络配置前先想清楚"这块网卡现在归谁管":是 networkd(写 .network 文件),还是你手动。两头抢,必有一头失联。</p>
+  </div>
+  <p>对了,新系统的 ssh 是我们第 4 章装的 openssh-server,现代协议全支持——第 1 章折腾出厂系统时那些 ssh-rsa 兼容配置,在这里统统不需要,直接 <code>ssh root@192.168.1.10</code>。想少打几个字,给电脑的 ~/.ssh/config 加个别名:</p>
+<pre><code>Host z7
+    HostName 192.168.1.10
+    User root
+<span class="c"># 之后只需: ssh z7</span></code></pre>
+  <p>顺手再验一下第 4 章拷进去的模块树真的就位:</p>
+<pre><code>ls /lib/modules/
+<span class="c"># 应看到你的内核版本目录(手册示例 6.18.0);依赖索引已生成</span></code></pre>
+  <p>五连全绿之后,再顺手看一眼系统的"体检指标",确认内存和存储都如预期:</p>
+<pre><code>free -m          <span class="c"># 内存总量应在 479MB 上下(512MB 减去顶端保留区)</span>
+df -h /          <span class="c"># rootfs 就是 SD 卡 p2,大小随你的卡</span>
+dmesg | grep -i 'renamed\|macb'   <span class="c"># 重温网口改名现场</span></code></pre>
+  <p>记录一下实测成绩,给自己一点正反馈:</p>
+  <div class="box box-win">
+    <div class="box-title">实测成绩(收官状态)</div>
+    <ul>
+      <li>上电到登录提示:约 30 秒;</li>
+      <li>ssh 往返延迟:约 1.1ms;</li>
+      <li>空闲结温:约 55°C(XADC 读法见第 1 章)。</li>
+    </ul>
+  </div>
+  <p>至此,这块板子正式从"实验对象"升级为"日常可用的 ARM 小服务器"。</p>
+
+  <h3>5.8 加餐:换个内核试试——extlinux 的威力</h3>
+  <p>系统活了,顺手做一个五分钟的实验,体验本章埋的伏笔。假设你改了内核又编了一版 zImage,想让板子用它——<strong>不需要重编 U-Boot,不需要重打 BOOT.BIN,甚至不需要拔卡</strong>(ssh 进去直接干):</p>
+<pre><code><span class="c"># 在板上(经 ssh),把新内核放到 FAT 分区</span>
+cp /path/to/new-zImage /boot/zImage-new
+<span class="c"># 在 /boot/extlinux/extlinux.conf 里加一个新条目(编辑器改,或追加重写)</span>
+<span class="c">#   label 新内核试验</span>
+<span class="c">#       kernel /zImage-new</span>
+<span class="c">#       fdt /zynq-z7-nano.dtb</span>
+<span class="c">#       append root=/dev/mmcblk0p2 rootwait rw console=ttyPS0,115200 earlycon=…</span>
+reboot</code></pre>
+  <p>重启后 U-Boot 列菜单,倒计时结束默认进第一条;想换回旧内核,把条目顺序调回去即可。这份"改文本文件就换内核"的从容,来自第 4 章那句 <code>BOOTCOMMAND="run distro_bootcmd"</code>——U-Boot 早就把选择权交到了 extlinux.conf 手里。</p>
+  <p>安全提示:永远保留一个<strong>已知能启动</strong>的条目在文件里;万一新内核起不来,拔卡插回电脑读卡器,在电脑上把 extlinux.conf 改回来即可救援——这又是 FAT 第一分区设计的红利。</p>
+  <p>更进一步的玩法(多内核菜单、fallback 条目、甚至 U-Boot 菜单脚本)都建立在这同一个机制上,留给读者探索。</p>
+
+  <div class="box box-win">
+    <div class="box-title">本章小结</div>
+    <ul>
+      <li>SD 布局:p1 = 512MB FAT32 @ 扇区 8192(BOOT.BIN、zImage、dtb、extlinux.conf),p2 = ext4 装整棵 Debian;</li>
+      <li>BOOT.BIN 用模板复用法生成:厂商镜像前 0x19740 字节原封不动 + 我们的 u-boot 平铺二进制,make-bootbin.py 自带 XOR 校验和与结束标记断言;</li>
+      <li>extlinux.conf 四行决定内核怎么启,earlycon 保证内核"落地即说话";换内核只改文件、不重编 U-Boot;</li>
+      <li>make-sd.sh 的三道安全闸(块设备、拒 NVMe、RM=1)是对付"手滑毁盘"的最后防线;FAT 拷贝用 -r 不用 -a,ext4 恰好相反;</li>
+      <li>首启节奏背下来:静默 3 秒 → U-Boot 横幅 → extlinux → 内核刷屏 → 30 秒到 login;监听器永远比电源先就位;</li>
+      <li>换内核 = 改一个文本文件 + 重启,extlinux 的解耦就是这么从容。</li>
+    </ul>
+  </div>
+
+  <div class="pager">
+    <a href="ch4-build.html">← 上一章:构建三件套</a>
+    <a href="ch6-debug.html">下一章:JTAG 调试方法论 →</a>
+  </div>
+</main>
+</body>
+</html>

@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 1 章 · 硬件档案与开箱 — Zynq Z7-Nano 主线 Linux 实战手册</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand">
+    <span class="chip">ZYNQ · MAINLINE</span>
+    <h1>Z7-Nano 主线 Linux</h1>
+    <p>从开箱到自主启动的完整实战</p>
+  </div>
+  <nav>
+    <a href="index.html"><span class="num">00</span>封面 · 如何使用本手册</a>
+    <a href="ch1-board.html" class="active"><span class="num">01</span>硬件档案与开箱</a>
+    <a href="ch2-bootchain.html"><span class="num">02</span>启动链与 BOOT.BIN 格式</a>
+    <a href="ch3-toolchain.html"><span class="num">03</span>工具链与开源替代</a>
+    <a href="ch4-build.html"><span class="num">04</span>构建三件套</a>
+    <a href="ch5-sdcard.html"><span class="num">05</span>制卡与首次启动</a>
+    <a href="ch6-debug.html"><span class="num">06</span>JTAG 调试方法论</a>
+    <a href="ch7-pitfalls.html"><span class="num">07</span>踩坑大全</a>
+    <a href="ch8-roadmap.html"><span class="num">08</span>路线图与附录</a>
+  </nav>
+  <footer>硬件:MicroPhase Z7-Nano R20 · XC7Z020<br>软件:主线 U-Boot · Linux 6.18 · Debian 13<br>知识共享,踩坑有痕</footer>
+</aside>
+<main class="main">
+  <div class="chapter-tag">CHAPTER 01</div>
+  <h2 class="title">硬件档案与开箱</h2>
+  <p class="subtitle">认识你的板子:每一个接口是干什么的,以及怎么在动手之前确认它是活的。</p>
+
+  <div class="box box-step">
+    <div class="box-title">本章任务</div>
+    <ol>
+      <li>给板子建一份硬件档案(接口、跳线、供电,一表在手);</li>
+      <li>连串口,用出厂系统登录,确认硬件无恙;</li>
+      <li>板和电脑直连,配 IP、双向 ping 通,再 ssh 上板;</li>
+      <li>用 XADC 给芯片量体温,拿到基准数据。</li>
+    </ol>
+    <p>整个开箱流程一条线,先看全景再进细节:</p>
+    <div class="flow">
+      <div class="node"><b>连串口</b> — type-C 插 UART 口,认出 CH340,115200 8N1</div>
+      <div class="arrow">↓</div>
+      <div class="node"><b>先监听后上电</b> — 抓到完整启动日志</div>
+      <div class="arrow">↓</div>
+      <div class="node"><b>登录</b> — root/root 进出厂 PetaLinux</div>
+      <div class="arrow">↓</div>
+      <div class="node"><b>通网</b> — 板上 ifconfig + 电脑 nmcli,双向 ping</div>
+      <div class="arrow">↓</div>
+      <div class="node"><b>体检</b> — XADC 量体温,记下基准 55°C</div>
+    </div>
+  </div>
+
+  <h3>1.1 板卡档案:Z7-Nano R20 是块什么板</h3>
+  <p>本手册的主角是微相科技(MicroPhase)Z7-Nano R20。动手之前先给它建一份档案——嵌入式移植里一半的"玄学问题",其实是没搞清楚硬件。下面这张表建议你先通读一遍,后面每一章都会反复回头查它。</p>
+  <table>
+    <tr><th>项目</th><th>规格 / 实况</th><th>对移植意味着什么</th></tr>
+    <tr>
+      <td>SoC</td>
+      <td>Xilinx Zynq XC7Z020-2CLG400:双核 ARM Cortex-A9(约 766MHz–1GHz)+ Artix-7 级 FPGA 逻辑</td>
+      <td>PS 侧跑 Linux;PL 默认是空的</td>
+    </tr>
+    <tr>
+      <td>内存</td>
+      <td>DDR3 512MB,物理地址从 0x0 起(内核可见约 479MB——为何不足 512?内核保留区吃掉了零头,第 04 章 4.5 有交代)</td>
+      <td>设备树 memory 节点要写 0x20000000(512MB)</td>
+    </tr>
+    <tr>
+      <td>串口</td>
+      <td><strong>UART0</strong> @ 0xE0000000,经 <strong>CH340E</strong> 芯片转出 type-C「UART」口,115200 8N1</td>
+      <td>全程控制台;板上唯一可用串口(见 1.2 末尾的知识框)</td>
+    </tr>
+    <tr>
+      <td>JTAG</td>
+      <td>板载 <strong>FT232H</strong>(USB VID:PID 0403:6014),接 type-C「JTAG」口</td>
+      <td>OpenOCD 可直接驱动,第 06 章排雷全靠它</td>
+    </tr>
+    <tr>
+      <td>网口 ×2</td>
+      <td><strong>PS ETH</strong>:Zynq GEM @ 0xE000B000 + Realtek RTL8211F PHY(RGMII-ID,PHY 挂 MDIO 地址 1,复位脚 MIO46)——系统可直接用;<strong>PL ETH</strong>:需要 FPGA 逻辑,当前系统不可用</td>
+      <td>网线必须插 PS ETH;插错口是新手第一大坑</td>
+    </tr>
+    <tr>
+      <td>启动选择</td>
+      <td>跳线选 SD / QSPI / JTAG;BOOT_MODE 寄存器 @ 0xF800025C 读回 5 = SD 档</td>
+      <td>移植期间跳线一律放 SD 档</td>
+    </tr>
+    <tr>
+      <td>供电</td>
+      <td>UART、JTAG 两个 type-C 口的 VBUS 经 OR 二极管汇到主 5V</td>
+      <td><strong>任一口都能独立供电</strong>(实测单插 UART 口可完整跑 Linux)</td>
+    </tr>
+  </table>
+
+  <div class="box box-know">
+    <div class="box-title">知识框:Zynq = PS + PL,一颗芯片两个世界</div>
+    <p>Zynq 之所以叫 SoC 而不叫 FPGA,是因为它体内有两个世界:</p>
+    <ul>
+      <li><strong>PS(Processing System,处理系统)</strong>:双核 Cortex-A9 加上 DDR 控制器、千兆网、USB、SD 卡、UART 等一整套外设——本质上就是一颗完整的 ARM SoC,跑 Linux 全靠它;</li>
+      <li><strong>PL(Programmable Logic,可编程逻辑)</strong>:Artix-7 级的 FPGA fabric,不烧比特流就没有灵魂——板上的第二个网口(PL ETH)和其它高速接口都归它管。</li>
+    </ul>
+    <p>本手册<strong>全程只动 PS</strong>:Linux 在 PS 上跑,不碰 PL 一根毛。想开垦 PL(写逻辑、点 HDMI),见第 08 章路线图。还有一个贯穿全册的推论:Zynq-7000 <strong>没有 pinctrl 子系统</strong>,PS 侧引脚复用(MIO)由 FSBL 里的 ps7_init 完成,设备树只描述设备、不管引脚——第 02 章会展开。</p>
+  </div>
+
+  <h4>双 type-C 的分工与供电小聪明</h4>
+  <p>板上两个 type-C 口长得很像,分工却完全不同:<strong>UART 口</strong>里是 CH340E 串口芯片,负责控制台;<strong>JTAG 口</strong>里是 FT232H,负责调试。而它们的 5V(VBUS)都经过 OR 二极管汇到主电源——所谓 OR 二极管,就是让两个口的电"谁的电压高用谁的"、互相不会倒灌。这带来一个实用结论:<strong>只插一根线也能开机</strong>,你不需要专门找供电口;但也意味着"插了线"不代表"接对了口"——按功能认口,别按"能不能亮"认口。</p>
+
+  <h3>1.2 开箱第一步:连上串口</h3>
+  <p>出厂 SD 卡里是 PetaLinux 2018.3:FAT32 根目录放着 10.6MB 的 BOOT.BIN(一个文件里打包了 FSBL、u-boot、image.ub 三个分区)和一个 image.ub。我们的策略是:<strong>先让出厂系统跑起来</strong>。这一步一石三鸟:验证硬件完好(串口、网口、DDR、SD 顺带全测了)、熟悉控制台环境、并且给移植留一个"对照组"——厂商的 BOOT.BIN 之后会成为我们自写打包器的模板。</p>
+
+  <div class="box box-know">
+    <div class="box-title">为什么要留"对照组"</div>
+    <p>后面第 02 章会讲到:验证自己生成的启动镜像,最可靠的办法之一是<strong>逐字节对照已知好样本</strong>。厂商出厂的 BOOT.BIN 就是那个"已知好样本"——它确定能启动,任何我们自制的镜像拿不准时,和它逐段比对,差异处就是嫌疑处。所以出厂 SD 卡请妥善保管,别手滑格式化。</p>
+  </div>
+
+  <p>把 type-C 线插到标着 <strong>UART</strong> 的口(注意,是 UART 口,不是 JTAG 口),另一头接电脑,然后确认系统认出了 CH340:</p>
+  <pre><code><span class="c"># 主机侧:确认 CH340 已被识别(1a86 是沁恒 CH340 的 USB 厂商号)</span>
+lsusb | grep 1a86
+dmesg | tail               <span class="c"># 应看到 ch341 驱动挂出 /dev/ttyUSB0</span>
+ls -l /dev/serial/by-id/   <span class="c"># 稳定路径,拔插后名字不变,脚本里优先用它</span></code></pre>
+  <p>串口参数是 <strong>115200 8N1</strong>(115200 波特、8 数据位、无校验、1 停止位)——Zynq 板卡的事实标准。串口是嵌入式开发唯一的"黑匣子记录仪":启动日志、内核报错、登录提示全从它走,所以第一件事永远是把它伺候好。</p>
+
+  <div class="box box-know">
+    <div class="box-title">知识框:115200 8N1 是什么</div>
+    <p>串口是按位收发的,双方必须约好规矩才能对话:<strong>115200</strong> 是波特率(每秒约 11.5KB 文本,够看清启动日志);<strong>8</strong> 是每帧 8 个数据位(一个字节);<strong>N</strong> 是无校验位;<strong>1</strong> 是 1 个停止位。任何一项对不上,看到的就不是日志而是乱码——乱码九成是波特率错了,先检查这个。</p>
+  </div>
+
+  <div class="box box-step">
+    <div class="box-title">步骤:先监听,再上电</div>
+    <p>串口工具要在<strong>上电之前</strong>就开始监听。为什么?BootROM 和 FSBL 阶段的输出只出现在上电后最初几秒,等看到"没反应"再开工具,关键信息早溜走了。用本手册仓库自带的串口助手(支持自动重连,专为踩坑设计;还没克隆仓库的话,回到封面准备清单先 <code>git clone</code> 并 <code>cd</code> 进仓库根目录):</p>
+    <pre><code>python3 uart.py listen 120   <span class="c"># 先开 120 秒监听,然后给板上电</span>
+python3 uart.py probe        <span class="c"># 拿不准板子在哪个界面?发个回车看看</span></code></pre>
+    <p>三种模式各司其职:</p>
+    <table>
+      <tr><th>命令</th><th>干什么</th><th>什么时候用</th></tr>
+      <tr><td><code>uart.py probe</code></td><td>发一个回车,监听 3 秒</td><td>看板子当前停在哪个界面(登录提示?shell?)</td></tr>
+      <tr><td><code>uart.py send "文字"</code></td><td>发送一行,监听 5 秒</td><td>输入命令或登录名,看即时回显</td></tr>
+      <tr><td><code>uart.py listen 秒数</code></td><td>只听不发,耐心等设备</td><td>抓完整启动日志;插拔期间也不会退出</td></tr>
+    </table>
+  </div>
+
+  <div class="box box-warn">
+    <div class="box-title">教训:串口会"干净地"消失</div>
+    <ul>
+      <li><strong>拔插 type-C 会让 /dev/ttyUSB 消失</strong>,普通串口工具当场崩溃退出——所以监听工具必须能自动重连,而且要在上电前启动;</li>
+      <li>还有一种更隐蔽的:线材接触不良时,CH340 会<strong>毫无报错地</strong>从 USB 总线消失(dmesg 里连芯片错误都没有),看起来像"板子挂了",其实是线挂了。手边备一根确认好用的 type-C 线,能省你半小时。</li>
+    </ul>
+  </div>
+
+  <div class="box box-know">
+    <div class="box-title">知识框:别去找"第二个串口"</div>
+    <p>原理图上 Zynq 有 UART0 和 UART1 两个串口,但 Zynq 的外设时钟是可配置的——这块板的 ps7_init(第 02 章详解)里 <strong>UART1 的时钟根本没有开启</strong>(UART1_CPU_1XCLKACT=0)。所以板上唯一启用的串口就是 UART0,它同时也是我们的内核控制台(console=ttyPS0)。翻板子找第二个串口、怀疑"是不是接错口了",都是白费劲。</p>
+  </div>
+
+  <h3>1.3 登录出厂系统</h3>
+  <p>跳线确认在 SD 档(跳线是板上丝印 BOOT/SW1 的多位拨码开关,档位含义以板面丝印为准,拿不准就对照厂商《开箱测试》文档)、出厂 SD 卡插好、监听开着,上电。几秒后串口应滚出 U-Boot 与内核的启动日志,最后停在登录提示:</p>
+  <pre><code>petalinux-boot-from-sd login:</code></pre>
+  <p>登录名 <strong>root</strong>,密码 <strong>root</strong>(出厂系统的默认值)。进系统后先跑两条命令安安心:</p>
+  <pre><code>cat /proc/version        <span class="c"># 看看出厂内核版本,心里有个对照</span>
+free -m                  <span class="c"># DDR 512MB,内核可见约 479MB,正常</span></code></pre>
+  <p>看到 shell 提示符,恭喜:SoC、DDR、SD 卡、串口这条链路全部工作正常——这已经排除了相当一批硬件故障。接下来把网络也点亮。</p>
+
+  <div class="box box-know">
+    <div class="box-title">知识框:控制台为什么叫 ttyPS0</div>
+    <p>Zynq PS 的 UART 是 Cadence IP,内核把它注册成 <strong>ttyPS</strong> 系列设备——ttyPS0 就是第一个 PS 串口,也就是我们的 UART0。所以后面新系统的内核命令行写的是 <code>console=ttyPS0,115200</code>;而 <code>earlycon=cdns,mmio,0xE0000000</code> 是更早的"预控制台",直接往 UART0 寄存器基址写字符——内核起来之前它就能出声,排障时极有用(第 05 章的 extlinux.conf 里会见到它俩)。</p>
+  </div>
+
+  <h3>1.4 把网络跑通:配 IP 与双向 ping</h3>
+  <p>串口能用之后,第一件事是把网络弄通——后面传输文件、远程登录、甚至排查问题都靠它。我们用最朴素的手工配 IP 方式,不需要任何 DHCP 服务器,一根网线把板和电脑直连:</p>
+  <pre><code>[板] eth0 = 192.168.1.10  ──网线直连──  [电脑] enp129s0 = 192.168.1.20</code></pre>
+  <p>两段地址都在 192.168.1.0/24 网段(子网掩码 255.255.255.0),所以它们天然互相"看得见"。</p>
+
+  <div class="box box-step">
+    <div class="box-title">步骤 1:板上配 IP(串口里执行)</div>
+    <pre><code>ifconfig eth0 192.168.1.10 netmask 255.255.255.0 up</code></pre>
+    <p>给板子的 eth0 配上 192.168.1.10/24 并拉起接口。注意这是<strong>老出厂系统</strong>,网卡还叫 eth0;换成我们自己的新系统后它会改名叫 end0(第 07 章的坑表有讲这个改名风波)。</p>
+  </div>
+
+  <div class="box box-step">
+    <div class="box-title">步骤 2:电脑侧配同网段(主机,Ubuntu + nmcli)</div>
+    <pre><code>nmcli con add type ethernet ifname enp129s0 con-name fpga-board \
+  ipv4.method manual ipv4.addresses 192.168.1.20/24
+nmcli con up fpga-board</code></pre>
+    <p>逐段拆开看这条命令:</p>
+    <ul>
+      <li><code>ifname enp129s0</code>——电脑的实际网卡名,用 <code>ip link</code> 查,本例是 enp129s0,你的多半不同;</li>
+      <li><code>con-name fpga-board</code>——给这条连接起个名,以后 <code>nmcli con up fpga-board</code> 一键复用;</li>
+      <li><code>ipv4.method manual + addresses</code>——静态指定 192.168.1.20/24,和板子同网段。</li>
+    </ul>
+  </div>
+
+  <div class="box box-step">
+    <div class="box-title">步骤 3:双向 ping,两个方向都要通</div>
+    <pre><code><span class="c"># 板上(串口里):ping 电脑</span>
+ping 192.168.1.20
+<span class="c"># 主机(电脑上):ping 板子</span>
+ping 192.168.1.10</code></pre>
+    <p>为什么要双向?<code>ping</code> 通只证明"请求能过去、应答能回来"整条链路无死角;单向测试有时会因为本机防火墙放行规则不同而误判。两个方向都通,网络才算真的通。</p>
+  </div>
+
+  <div class="box box-warn">
+    <div class="box-title">教训:单边有链路 = 插错口了</div>
+    <p>这块板有两个 RJ45,实测第一天就踩了:网线插到了 <strong>PL ETH</strong> 口,电脑侧显示"已连接"(电脑网卡和对端 PHY 握手成功),但板子的 eth0 始终无载波:</p>
+    <pre><code><span class="c"># 插错口时,板上 ip addr 的状态(示意)</span>
+2: eth0: &lt;NO-CARRIER,BROADCAST,MULTICAST,UP&gt; ... state DOWN</code></pre>
+    <p><strong>电脑侧有链路、板子侧无载波,这个组合就是插错口的典型特征</strong>——因为 PL ETH 的 PHY 要靠 FPGA 逻辑驱动,当前系统里它压根不存在。拔下来插另一个口,立刻就通。记住这条,能救命。</p>
+  </div>
+
+  <h4>进阶:ssh 上板(和新 OpenSSH 的兼容坑)</h4>
+  <p>出厂系统跑的是老版 dropbear,只支持 ssh-rsa 算法;而 Ubuntu 24.04 的 OpenSSH 出于安全考虑默认禁用了它。直连会报算法协商失败。解决办法是在电脑的 <code>~/.ssh/config</code> 里给这块板单独放开:</p>
+  <pre><code>Host fpga
+    HostName 192.168.1.10
+    HostKeyAlgorithms +ssh-rsa
+    PubkeyAcceptedAlgorithms +ssh-rsa</code></pre>
+  <p>之后 <code>ssh root@fpga</code>(或 <code>ssh root@192.168.1.10</code>)即可,密码 root。另外两个细节:老 dropbear 连 ed25519 用户密钥也不认,RSA 密钥加强制 ssh-rsa 才能通;公钥认证还有 PAM 相关的坑没完全解开,密码方式是稳妥的。当然,这些只影响老系统——换成我们的 Debian 13 后,一切现代化问题烟消云散。</p>
+
+  <h3>1.5 XADC 体检:给芯片量体温</h3>
+  <p>Zynq 芯片内部自带一路 XADC(12 位 ADC),专门用来测<strong>结温</strong>和各路<strong>电源轨电压</strong>——相当于芯片自带的体检报告,不需要任何外部仪表。出厂内核已经把它挂成了 IIO 设备:</p>
+  <pre><code>ls /sys/bus/iio/devices/          <span class="c"># 找到 iio:device0,设备名 xadc</span>
+cd /sys/bus/iio/devices/iio:device0
+ls                                <span class="c"># 列出所有通道文件(通道名以实际输出为准)</span></code></pre>
+  <p>每个通道一组三个文件:<code>*_raw</code>(原始读数)、<code>*_scale</code>(刻度)、<code>*_offset</code>(零偏)。换算公式:</p>
+  <pre><code>实际值 = (raw + offset) × scale / 1000</code></pre>
+  <p>以温度通道为例(通道文件名以你 <code>ls</code> 的实际输出为准),把 raw 与 scale、offset 读出来代入公式即可。这里测的是"结温"(junction temperature)——芯片硅片内部的温度,比手摸外壳得到的体感更真实、也更严格。</p>
+  <p>我们这台板的实测体检结果:<strong>空闲结温约 55°C</strong>,各电源轨电压全部正常——硬件健康,可以放心动手术。这个 55°C 顺便成了这台板的"基准体温":以后新系统跑起来,温度显著高于它就该查查是不是哪儿在空转了。</p>
+
+  <div class="box box-know">
+    <div class="box-title">知识框:XADC 与 IIO 是什么</div>
+    <p>XADC 是 Zynq 内置的模数转换器,出厂就接着芯片内部的温度传感和内核、辅助、Block RAM 等各路电源轨的电压监测点——相当于芯片出厂自带的一块万用表加温度计。内核里管它的子系统叫 <strong>IIO(Industrial I/O)</strong>,它把每个测量点暴露成 <code>/sys/bus/iio/devices/</code> 下的标准文件。这套接口在所有 Linux 板卡上都长一样,学会了到处能用。</p>
+  </div>
+
+  <h3>1.6 开箱检查单</h3>
+  <p>把上面的动作浓缩成一张检查单,每换一块板、每次重新开箱,照着过一遍:</p>
+  <table>
+    <tr><th>#</th><th>检查项</th><th>通过标准</th><th>卡住了去哪</th></tr>
+    <tr><td>1</td><td>跳线在 SD 档,出厂 SD 卡插好</td><td>上电后串口滚出启动日志</td><td>02(启动链与跳线)/ 06(读 BOOT_MODE)</td></tr>
+    <tr><td>2</td><td>type-C 插 UART 口,先开监听再上电</td><td>看到 petalinux-boot-from-sd login:</td><td>本文 1.2 的两个串口教训</td></tr>
+    <tr><td>3</td><td>root/root 登录</td><td>拿到 shell 提示符</td><td>换根好线再试</td></tr>
+    <tr><td>4</td><td>网线插 <strong>PS ETH</strong> 口</td><td>ifconfig 里 eth0 有载波,无 NO-CARRIER</td><td>本文 1.4"单边有链路"教训</td></tr>
+    <tr><td>5</td><td>两端配 IP,双向 ping</td><td>两个方向都 0% 丢包</td><td>07(坑表:网卡改名、地址被 networkd 清掉)</td></tr>
+    <tr><td>6</td><td>读 XADC 温度与电压</td><td>结温 ~55°C 量级,电压在合理范围</td><td>确认 iio:device0 存在(出厂内核已带)</td></tr>
+  </table>
+  <p>六项全绿,说明板子硬件无恙、你的操作环境(串口、网络)也已就绪——接下来就可以放心大干一场了。</p>
+
+  <h3>1.7 常见问题快修</h3>
+  <p>开箱阶段的高频故障,按"症状 → 第一反应"列出;更全的坑表见第 07 章。</p>
+  <table>
+    <tr><th>症状</th><th>第一反应</th><th>为什么</th></tr>
+    <tr><td>串口完全没输出</td><td>查跳线是否在 SD 档;换一根 type-C 线</td><td>跳线不在 SD 档时 BootROM 空等(全静默);线接触不良会让 CH340 干净地消失</td></tr>
+    <tr><td>串口输出乱码</td><td>核对 115200 8N1</td><td>参数对不上时,波特率错是乱码的头号原因</td></tr>
+    <tr><td>电脑显示"已连接"但 ping 不通</td><td>确认网线在 PS ETH 口;核对两端同网段</td><td>"单边有链路"= 插到 PL ETH 口;不同网段永远 ping 不通</td></tr>
+    <tr><td>ssh 报算法协商失败</td><td>配 ~/.ssh/config 的 +ssh-rsa</td><td>老 dropbear 只认 ssh-rsa,新 OpenSSH 默认禁用</td></tr>
+    <tr><td>拔插 type-C 后工具死了</td><td>用能自动重连的 uart.py 重开</td><td>设备节点消失,普通工具不会重连</td></tr>
+  </table>
+
+  <h3>1.8 本章命令速查</h3>
+  <p>本章出现过的所有命令,集中备查(标注:板上 = 板子串口里执行,主机 = 电脑 Ubuntu 里执行):</p>
+  <table>
+    <tr><th>在哪</th><th>命令</th><th>用途</th></tr>
+    <tr><td>主机</td><td><code>lsusb | grep 1a86</code></td><td>确认 CH340 串口芯片被识别</td></tr>
+    <tr><td>主机</td><td><code>ls -l /dev/serial/by-id/</code></td><td>拿串口稳定路径(拔插不变)</td></tr>
+    <tr><td>主机</td><td><code>python3 uart.py listen 120</code></td><td>上电前开始监听启动日志</td></tr>
+    <tr><td>主机</td><td><code>python3 uart.py probe</code></td><td>发回车探一下当前界面</td></tr>
+    <tr><td>板上</td><td><code>ifconfig eth0 192.168.1.10 netmask 255.255.255.0 up</code></td><td>给板子配静态 IP</td></tr>
+    <tr><td>主机</td><td><code>nmcli con add type ethernet ifname 网卡名 ...</code></td><td>电脑侧配同网段静态 IP</td></tr>
+    <tr><td>两边</td><td><code>ping 对端IP</code></td><td>双向连通性验证</td></tr>
+    <tr><td>主机</td><td><code>ssh root@fpga</code>(配合 ~/.ssh/config)</td><td>远程登录,绕开老 dropbear 的算法坑</td></tr>
+    <tr><td>板上</td><td><code>cat /sys/bus/iio/devices/iio:device0/*_raw</code></td><td>读 XADC 原始值,代入公式换算</td></tr>
+  </table>
+
+  <div class="box box-know">
+    <div class="box-title">如果你的板子不是 Z7-Nano</div>
+    <p>本章流程(连串口 → 登录 → 通网 → 体检)对任何 Zynq-7000 板都成立,要换的是这几个"因板而异"的参数:</p>
+    <ul>
+      <li><strong>串口</strong>:是 UART0 还是 UART1 做控制台?波特率通常仍是 115200;</li>
+      <li><strong>PHY</strong>:型号、MDIO 地址、复位脚(本板是 RTL8211F @ 地址 1、MIO46)——不确定时可以先让驱动全总线扫描(第 04 章设备树一节讲这招);</li>
+      <li><strong>内存大小</strong>:设备树 memory 节点按实际 DDR 容量写;</li>
+      <li><strong>FSBL</strong>:必须用你板子的厂商 BOOT.BIN 当模板——FSBL 里的 ps7_init 参数每块板不同,张冠李戴会初始化出错误的 DDR 时序。</li>
+    </ul>
+    <p>顺带一提:出厂 SD 卡之外,厂商资料包(Z7-NanoR20-7020-2018.3)里还有开箱测试镜像和 demo 包——里面藏着后面要用的 zynq_fsbl.elf、hdf 等物料,完整清单见第 08 章附录 B。</p>
+  </div>
+
+  <p>硬件认识完了、体检全绿,下一章我们钻进 Zynq 最核心的知识:上电之后、Linux 起来之前,这几十秒里芯片到底经历了什么——理解了它,后面所有的"没反应"都将不再是玄学。</p>
+
+  <div class="box box-win">
+    <div class="box-title">本章小结</div>
+    <ul>
+      <li>拿到板子先建档案:双 type-C(UART=CH340E 串口 / JTAG=FT232H)、双网口(只有 PS ETH 可用)、跳线必须在 SD 档、任一 type-C 口都能独立供电;</li>
+      <li>串口三要素:CH340、115200 8N1、<strong>先监听后上电</strong>,监听工具必须能自动重连——拔插 type-C 会让 /dev/ttyUSB 消失;</li>
+      <li>root/root 进出厂系统;板上 ifconfig、电脑侧 nmcli 配同网段,双向 ping 都通才算网络通;</li>
+      <li>「电脑侧有链路、板上无载波」= 网线插到 PL ETH 口了,换口即愈;</li>
+      <li>XADC 公式 (raw + offset) × scale / 1000;空闲结温 55°C 是这台板的基准体温;</li>
+      <li>厂商 BOOT.BIN 别删——它是后面自写打包器的模板,也是排雷时的"已知好样本"。</li>
+    </ul>
+  </div>
+
+  <div class="pager">
+    <a href="index.html">← 上一章:封面 · 如何使用本手册</a>
+    <a href="ch2-bootchain.html">下一章:启动链与 BOOT.BIN 格式 →</a>
+  </div>
+</main>
+</body>
+</html>

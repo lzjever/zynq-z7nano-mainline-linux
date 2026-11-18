@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 8 章 · 路线图与附录 — Zynq Z7-Nano 主线 Linux 实战手册</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand">
+    <span class="chip">ZYNQ · MAINLINE</span>
+    <h1>Z7-Nano 主线 Linux</h1>
+    <p>从开箱到自主启动的完整实战</p>
+  </div>
+  <nav>
+    <a href="index.html"><span class="num">00</span>封面 · 如何使用本手册</a>
+    <a href="ch1-board.html"><span class="num">01</span>硬件档案与开箱</a>
+    <a href="ch2-bootchain.html"><span class="num">02</span>启动链与 BOOT.BIN 格式</a>
+    <a href="ch3-toolchain.html"><span class="num">03</span>工具链与开源替代</a>
+    <a href="ch4-build.html"><span class="num">04</span>构建三件套</a>
+    <a href="ch5-sdcard.html"><span class="num">05</span>制卡与首次启动</a>
+    <a href="ch6-debug.html"><span class="num">06</span>JTAG 调试方法论</a>
+    <a href="ch7-pitfalls.html"><span class="num">07</span>踩坑大全</a>
+    <a href="ch8-roadmap.html" class="active"><span class="num">08</span>路线图与附录</a>
+  </nav>
+  <footer>硬件:MicroPhase Z7-Nano R20 · XC7Z020<br>软件:主线 U-Boot · Linux 6.18 · Debian 13<br>知识共享,踩坑有痕</footer>
+</aside>
+<main class="main">
+  <div class="chapter-tag">CHAPTER 08</div>
+  <h2 class="title">路线图与附录</h2>
+  <p class="subtitle">移植完成不是终点:六个方向接着玩,外加全册的代码索引、关键数字与阅读地图。</p>
+
+  <h3>8.1 进阶路线图:接下来玩什么</h3>
+  <p>板子现在跑着主线 U-Boot + Linux 6.18 + Debian 13,SD 卡启动、ssh 可达——这就是传说中的"能用"状态。往下怎么走?这里给出六个方向,每个都标注<strong>做什么、学什么、难度</strong>,先上一张总览,再逐个展开:</p>
+  <p>难度怎么读?主要看三件事:要不要写裸机代码(FSBL)、要不要装新工具链、出错时好不好回退。同一个方向,把第 6 章灌注救援亲手做过一遍的你和没做过的你,体感难度完全不同。</p>
+  <table>
+    <tr><th>#</th><th>方向</th><th>难度</th><th>一句话</th></tr>
+    <tr><td>一</td><td><a href="#d1">给 end0 钉死 MAC 地址</a></td><td>入门</td><td>半小时让板子每次以同一身份上线</td></tr>
+    <tr><td>二</td><td><a href="#d2">JTAG 启动模式</a></td><td>入门</td><td>把第 06 章的调试功夫变成日常救援通道</td></tr>
+    <tr><td>三</td><td><a href="#d3">PYNQ 镜像尝鲜</a></td><td>入门</td><td>厂商 demo 包里有现成的,刷卡即玩</td></tr>
+    <tr><td>四</td><td><a href="#d4">响亮 FSBL</a></td><td>中等</td><td>让启动过程开口说话,静默故障无处遁形</td></tr>
+    <tr><td>五</td><td><a href="#d5">QSPI 启动</a></td><td>中等偏上</td><td>启动链写进板载闪存,向产品化再进一步</td></tr>
+    <tr><td>六</td><td><a href="#d6">PL 开垦(FPGA 逻辑篇)</a></td><td>进阶</td><td>请出 Vivado,开垦 Zynq 姓"F"的那一半</td></tr>
+  </table>
+
+  <h4 id="d1">方向一:给 end0 钉死 MAC 地址(难度:入门)</h4>
+  <ul>
+    <li><strong>做什么</strong>:写一个 systemd 的 <code>.link</code> 文件,给 end0 固定 MACAddress——文件放 <code>/etc/systemd/network/</code> 下,Match 段按 <code>Name=end0</code> 匹配,Link 段写死 MACAddress,机制细节 <code>man systemd.link</code> 讲得最全;</li>
+    <li><strong>学什么</strong>:systemd-udevd 的 .link 匹配机制——顺带给"网卡为什么叫 end0 不叫 eth0"这个第 07 章的老朋友一个正式收尾;</li>
+    <li><strong>为什么值得</strong>:MAC 钉死之后,板子每次上电都以同一个身份出现,交换机、DHCP、IP 白名单从此都省心。半小时的活,性价比极高;</li>
+    <li><strong>什么算做成</strong>:重启几次,<code>ip link</code> 里 end0 的 link/ether 始终是同一个地址。</li>
+  </ul>
+
+  <h4 id="d2">方向二:JTAG 启动模式(难度:入门)</h4>
+  <ul>
+    <li><strong>做什么</strong>:跳线切到 JTAG 档,把第 06 章的 OpenOCD 灌注流程直接用作日常启动/救援手段——配置文件就是仓库里的 <code>openocd-z7nano.cfg</code>;</li>
+    <li><strong>学什么</strong>:JTAG 启动的完整姿势——BootROM 在 JTAG 档会空等主机指令,天生就是给调试准备的;</li>
+    <li><strong>为什么值得</strong>(几乎)零成本:硬件天然支持,第 06 章的功夫直接复用。SD 卡刷坏了、BOOT.BIN 写坏了,它就是你的救命通道;Vivado 的 hw manager / xsct 也能干这活,但我们继续用开源工具;</li>
+    <li><strong>什么算做成</strong>:SD 卡完全拔掉,靠 load_image 灌 FSBL + U-Boot,串口照常出现 U-Boot 横幅;</li>
+    <li><strong>相关章节</strong>:第 06 章(JTAG 方法论与灌注命令)。</li>
+  </ul>
+
+  <h4 id="d3">方向三:PYNQ 镜像尝鲜(难度:入门)</h4>
+  <ul>
+    <li><strong>做什么</strong>:厂商 demo 包里有现成的 PYNQ 镜像,解包取镜像、写卡启动,不需要自己构建;</li>
+    <li><strong>学什么</strong>:PYNQ 那套"用 Python 驱动 FPGA"的路线,和本手册"底层全手工"的路线正好互补——感受一下两种哲学的差别;</li>
+    <li><strong>为什么值得</strong>:拿来主义,零门槛。玩过之后再决定要不要深入,沉没成本极低;</li>
+    <li><strong>什么算做成</strong>:PYNQ 镜像跑通厂商自带的入门例程,在浏览器里和板子愉快交互。</li>
+  </ul>
+
+  <h4 id="d4">方向四:响亮 FSBL——让启动过程开口说话(难度:中等)</h4>
+  <ul>
+    <li><strong>做什么</strong>:取 Xilinx embeddedsw(xilinx-v2018.3 tag)的 FSBL 源码 + 厂商 hdf 里解出的 ps7_init.c,打开 FSBL_DEBUG_INFO 编译开关,用 arm-none-eabi 裸机工具链手工重编一个"话痨版" FSBL;</li>
+    <li><strong>学什么</strong>:FSBL 内部流程(第 02 章的理论在这里落地)、debug 开关的编译机制、ps7_init 寄存器参数与板级硬件的对应关系;</li>
+    <li><strong>为什么值得</strong>:厂商的 FSBL 是"哑巴版"(debug 打印被编译关闭),串口全程静默——第 06 章深夜排雷的一半痛苦都源于此。换了响亮版,启动卡在哪一步直接打印在串口上,所有静默故障无处遁形。这也是理解 Zynq 启动机制最深的一条路;</li>
+    <li><strong>什么算做成</strong>:上电后串口第一屏就有 FSBL 的版本号与分区加载打印;</li>
+    <li><strong>相关章节</strong>:第 02 章(FSBL 职责与 image_mover 流程)、第 06 章(它替你省掉的排雷功夫)。</li>
+  </ul>
+
+  <h4 id="d5">方向五:QSPI 启动(难度:中等偏上)</h4>
+  <ul>
+    <li><strong>做什么</strong>:给两棵设备树(内核 + U-Boot)加 QSPI 分区表,U-Boot 增加 QSPI bootcmd,把启动链写进板载 QSPI 闪存——好消息是我们的内核设备树里 qspi 节点已经 status okay,起点不算低;</li>
+    <li><strong>学什么</strong>:QSPI 闪存的启动链布局、U-Boot bootcmd 定制——比 SD 启动更接近"产品化"的形态;</li>
+    <li><strong>注意</strong>:这块板的 QSPI 容量只够放启动链,<strong>rootfs 仍要走 SD 卡</strong>,所以做出来是"无卡不完整启动"状态——动手前想清楚这是不是你想要的;</li>
+    <li><strong>什么算做成</strong>:拔掉 SD 卡上电,仍能走到 U-Boot(内核与 rootfs 阶段再把卡插回);</li>
+    <li><strong>相关章节</strong>:第 02 章(启动介质与 BOOT.BIN 布局)。</li>
+  </ul>
+
+  <h4 id="d6">方向六:PL 开垦——FPGA 逻辑篇(难度:进阶)</h4>
+  <ul>
+    <li><strong>做什么</strong>:安装免费的 Vivado ML Standard(安装时只勾 Vivado + Zynq-7000 器件族,可控制在约 15GB 下载),跟厂商教程 Part1 逻辑篇入门;之后可以把 PL 比特流打进 BOOT.BIN 第三分区,上电自动配置 FPGA;</li>
+    <li><strong>学什么</strong>:FPGA 逻辑设计、PL 与 PS 的协同——这才是 Zynq 姓"F"的那一半,也是买这块板而不是买普通 ARM 板的理由;</li>
+    <li><strong>注意</strong>:全新领域,且必须上 Vivado——Yosys/nextpnr 不支持 Zynq-7000 SoC 流程,没有开源替代。好在纯 PS 移植(本手册的全部)不需要它;</li>
+    <li><strong>什么算做成</strong>:跑通厂商逻辑篇教程的第一个实验;再进一步,把比特流打进 BOOT.BIN 第三分区,上电自动配置 PL。</li>
+  </ul>
+
+  <div class="box box-know">
+    <div class="box-title">怎么选?</div>
+    <p>想继续深耕 Linux/系统侧:一 → 二 → 四 → 五,层层递进;想摸 FPGA:直接六,PYNQ(三)可以当甜点;只想让板子"规矩点":做一个就收工。都不想做?把本手册再通读一遍查漏补缺,也很好。</p>
+  </div>
+
+  <h3>8.2 附录 A:code/ 代码索引</h3>
+  <p>仓库 <code>code/</code> 目录下的 9 个文件,<strong>全部在实战中验证过</strong>——不是示例代码,是当天真用过的那批。索引如下:</p>
+  <table>
+    <tr><th>文件</th><th>用途</th><th>关键点(行号为文件内位置)</th></tr>
+    <tr>
+      <td><code>uart.py</code></td>
+      <td>串口助手:probe / send / listen 三种模式</td>
+      <td>L11 用 <code>/dev/serial/by-id/</code> 稳定路径定位 CH340;L51-57 断线自动重连;listen 模式耐心等待设备重新出现</td>
+    </tr>
+    <tr>
+      <td><code>make-bootbin.py</code></td>
+      <td>BOOT.BIN 打包器(v2,正确版)</td>
+      <td>L63 分区头校验和是 <strong>XOR 0xFFFFFFFF</strong>(不是减法);L66 结束标记 15×0 + 0xFFFFFFFF(不是全 0xFF);L23-28 布局常量(p2 数据起始 0x19740)</td>
+    </tr>
+    <tr>
+      <td><code>make-sd.sh</code></td>
+      <td>制卡脚本:安全检查 + 分区 + 格式化 + 拷贝</td>
+      <td>L15-17 安全检查(拒 NVMe、要求 RM=1 可移动,L16 的 <code>tr -d ' '</code> 去前导空格);L22-26 sfdisk 分区表;L38 FAT 分区用 <code>cp -r</code>(FAT 无属主,<code>cp -a</code> 会报错)</td>
+    </tr>
+    <tr>
+      <td><code>zynq-z7-nano-kernel.dts</code></td>
+      <td>内核设备树(Linux 6.18 用)</td>
+      <td>L18-23 aliases 把 serial0 指向 uart0;L25-28 内存 512MB;L45-54 gem0 + RTL8211F PHY(MDIO 地址 1、复位脚 MIO46)</td>
+    </tr>
+    <tr>
+      <td><code>zynq-z7-nano-uboot.dts</code></td>
+      <td>U-Boot 设备树</td>
+      <td>与内核版同源小改(基于 zynq-zed.dts):控制台 uart0、512MB DDR、同一颗 PHY 描述</td>
+    </tr>
+    <tr>
+      <td><code>openocd-z7nano.cfg</code></td>
+      <td>JTAG 调试配置(OpenOCD)</td>
+      <td>四行搞定:um232h.cfg(FT232H)+ 速度 2000 + zynq_7000 目标,全程不需要 Xilinx 工具</td>
+    </tr>
+    <tr>
+      <td><code>extlinux.conf</code></td>
+      <td>distro boot 启动描述</td>
+      <td>kernel /zImage + fdt /zynq-z7-nano.dtb + append(console=ttyPS0、root=mmcblk0p2、earlycon)——换内核不用重编 U-Boot 的关键</td>
+    </tr>
+    <tr>
+      <td><code>10-eth.network</code></td>
+      <td>systemd-networkd 网络配置</td>
+      <td>Match 段同时写 eth0 与 end0 两个名字——新旧内核命名都兜住</td>
+    </tr>
+    <tr>
+      <td><code>failed-bootgen-mkbootimage.bif</code></td>
+      <td>失败案例存档</td>
+      <td>mkbootimage 路线的"遗照":它的输出被 BootROM 拒收,ELF 节区编码也不合 FSBL 裸拷贝语义,留档示警</td>
+    </tr>
+  </table>
+
+  <h4>两个高频用法示例</h4>
+  <p>打包 BOOT.BIN(输入厂商模板 + 我们的 u-boot 平铺二进制):</p>
+  <pre><code>python3 make-bootbin.py --template 厂商BOOT.BIN --uboot u-boot-dtb.bin \
+  --text-base 0x04000000 -o BOOT.BIN</code></pre>
+  <p>制卡(第一个参数是 SD 卡设备,第二个是 BOOT.BIN 路径):</p>
+  <pre><code>sudo ./make-sd.sh /dev/sdX BOOT.BIN</code></pre>
+
+  <div class="box box-warn">
+    <div class="box-title">拿去就用之前</div>
+    <ul>
+      <li><code>make-sd.sh</code> 顶部的 <code>SD_DIR</code> / <code>ROOTFS</code> 是绝对路径,改成你自己机器上的实际位置(sudo 下 ~ 会展开成 /root,别用波浪号);</li>
+      <li><code>uart.py</code> 的 by-id 路径以你机器 <code>ls /dev/serial/by-id/</code> 的实际输出为准;</li>
+      <li><code>make-bootbin.py</code> 的 <code>--text-base</code> 必须与你 U-Boot 的 TEXT_BASE 一致(默认 0x04000000)。</li>
+    </ul>
+  </div>
+
+  <h3>8.3 附录 B:原始素材在哪(供追溯)</h3>
+  <p>本手册的所有结论都能追溯到具体文件。如果你要复核、或者换了同系列的板子要对照,从这里出发:</p>
+  <table>
+    <tr><th>位置</th><th>内容</th></tr>
+    <tr><td><code>~/zynq-mainline/</code></td><td>当时的工作区:{src, build, rootfs, sd, vendor, tools, scripts}——源码树、构建产物、rootfs、制卡内容、厂商资料、工具全在此</td></tr>
+    <tr><td>厂商资料包 <code>Z7-NanoR20-7020-2018.3/</code></td><td><code>01_开箱检测/7020开箱测试images</code> 有出厂 BOOT.BIN 与 image.ub(我们的模板与对照样本);<code>04_demo</code> 的 7z 压缩包里藏着 <code>zynq_fsbl.elf</code>、hdf、ps7_init.tcl——做"响亮 FSBL"(方向四)全靠它们</td></tr>
+    <tr><td><code>~/zynq-mainline/tools/embeddedsw</code></td><td>Xilinx embeddedsw 源码,checkout 在 xilinx-v2018.3 tag——FSBL 与 image_mover.c 的出处,第 02 章格式结论的源码依据</td></tr>
+  </table>
+
+  <h3>8.4 附录 C:关键数字速查</h3>
+  <p>全册的实测成绩与关键常量,做成一张卡片备查——排障时最有用的往往就是这几个数:</p>
+  <table>
+    <tr><th>类别</th><th>条目</th><th>数值 / 含义</th></tr>
+    <tr><td rowspan="3">实测成绩</td><td>上电到登录提示</td><td>约 30 秒(SD 卡启动,静默 FSBL 约 3 秒后 U-Boot 横幅)</td></tr>
+    <tr><td>ssh 延迟</td><td>约 1.1ms</td></tr>
+    <tr><td>空闲结温(XADC)</td><td>约 55°C</td></tr>
+    <tr><td rowspan="5">硬件关键值</td><td>串口</td><td>UART0 @ 0xE0000000,115200 8N1,经 CH340E(USB 厂商号 1a86)</td></tr>
+    <tr><td>JTAG</td><td>板载 FT232H,USB VID:PID 0403:6014</td></tr>
+    <tr><td>以太网</td><td>GEM @ 0xE000B000;RTL8211F PHY 挂 MDIO 地址 1,复位脚 MIO46,RGMII-ID</td></tr>
+    <tr><td>内存</td><td>DDR3 512MB @ 0x0(内核可见约 479MB)</td></tr>
+    <tr><td>启动档位</td><td>BOOT_MODE 寄存器 @ 0xF800025C,读回 5 = SD 档</td></tr>
+    <tr><td rowspan="5">构建产物与布局</td><td>内核</td><td>zImage 约 11.7MB;899 个模块约 120MB;控制台 ttyPS0</td></tr>
+    <tr><td>U-Boot</td><td>TEXT_BASE = 0x04000000(分区 dest_load/dest_exec 同此)</td></tr>
+    <tr><td>BOOT.BIN 布局</td><td>FSBL 数据起始 0x1700;u-boot 分区数据起始 0x19740;分区头表 @ 0xC80(每项 0x40 字节)</td></tr>
+    <tr><td>SD 卡布局</td><td>p1 = 512MB FAT32(起始扇区 8192,type 0x0C);p2 = ext4 rootfs</td></tr>
+    <tr><td>新系统网卡名</td><td>end0(想要 eth0 需内核命令行加 net.ifnames=0)</td></tr>
+    <tr><td rowspan="3">速查命令与校验</td><td>OpenOCD 核心</td><td>openocd -f 配置 -c "init" -c "targets zynq.cpu0" -c "halt" -c "reg pc" -c "resume" -c "shutdown"</td></tr>
+    <tr><td>内核必验 config</td><td>ARCH_ZYNQ / SERIAL_XILINX_PS_UART(_CONSOLE) / MACB / REALTEK_PHY / USB_CHIPIDEA / EXT4_FS / CGROUPS 全为 y</td></tr>
+    <tr><td>分区头校验和</td><td>w15 = sum(w0..w14) XOR 0xFFFFFFFF——是异或,不是 0xFFFFFFFF 减法</td></tr>
+  </table>
+
+  <h3>8.5 附录 D:版本快照</h3>
+  <p>复现实验时,软件版本是"隐性变量"。这是当时的版本组合,出问题时先对照:</p>
+  <table>
+    <tr><th>组件</th><th>版本</th><th>备注</th></tr>
+    <tr><td>U-Boot</td><td>主线仓库浅克隆(clone --depth 1,2026-11 时点)</td><td>2026 年已无 zynq_zed_defconfig 单板配置,统一走 xilinx_zynq_virt_defconfig + DEVICE_TREE 覆盖</td></tr>
+    <tr><td>Linux</td><td>主线(手册时点为 6.18)</td><td>ARM 32 位用 multi_v7_defconfig(6.12 之后没有单板 defconfig)</td></tr>
+    <tr><td>rootfs</td><td>Debian 13(trixie)</td><td>debootstrap --foreign + qemu-arm-static 第二段完成</td></tr>
+    <tr><td>交叉编译器</td><td>GCC 13.3(Ubuntu 24.04 自带)</td><td>交叉编译对编译器版本要求宽松,无需另装</td></tr>
+    <tr><td>FSBL 源码</td><td>embeddedsw,xilinx-v2018.3 tag</td><td>直接复用厂商现成 FSBL 时可跳过</td></tr>
+    <tr><td>JTAG 工具</td><td>OpenOCD(apt 安装)</td><td>驱动板载 FT232H,无需 Xilinx 服务器</td></tr>
+    <tr><td>对照样本</td><td>出厂 PetaLinux 2018.3 的 BOOT.BIN</td><td>打包模板 + "已知好样本"</td></tr>
+  </table>
+
+  <h3>8.6 全册阅读地图</h3>
+  <p>最后一张地图,把九章串成三条使用线:</p>
+  <table>
+    <tr><th>路线</th><th>走法</th><th>关键道具</th><th>适合谁</th></tr>
+    <tr>
+      <td><strong>系统跟做线</strong></td>
+      <td>01 开箱体检 → 02 启动链理论 → 03 工具链 → 04 构建三件套 → 05 制卡首启;06 / 07 出事再读,08 收尾展望</td>
+      <td>uart.py → 档案表 → apt 工具链 → defconfig / debootstrap → make-sd.sh + extlinux.conf</td>
+      <td>第一次做移植,想完整走一遍的人</td>
+    </tr>
+    <tr>
+      <td><strong>故障急救线</strong></td>
+      <td>02 查跳线与启动链 → 06 JTAG 读 PC 分层定位 → 07 对照 17 坑表逐条排查</td>
+      <td>openocd-z7nano.cfg + PC 诊断速查表</td>
+      <td>板子刷坏了、串口没输出的同学(深呼吸,都有救)</td>
+    </tr>
+    <tr>
+      <td><strong>资料查询线</strong></td>
+      <td>BOOT.BIN 格式细节查 02;构建命令查 04;制卡与 extlinux 查 05;JTAG 命令速查 06;坑表查 07;代码与数字速查本章</td>
+      <td>本章附录 A(代码索引)+ 附录 C(关键数字)</td>
+      <td>已经上手,把手册当字典翻的人</td>
+    </tr>
+  </table>
+
+  <h3>8.7 结语:从这里出发</h3>
+  <p>到这里,你已经(或者即将)完整走过一次 Zynq 主线移植。整个移植收敛成六步,贴在这里作最后一眼回顾:</p>
+  <ol>
+    <li>apt 装交叉工具链与依赖(第 03 章);</li>
+    <li>编三件套:主线 U-Boot、Linux 6.18 内核、Debian 13 rootfs(第 04 章);</li>
+    <li><code>python3 code/make-bootbin.py</code> 生成 BOOT.BIN(厂商模板 + u-boot-dtb.bin);</li>
+    <li><code>sudo code/make-sd.sh /dev/sdX BOOT.BIN</code> 制卡;</li>
+    <li>插卡、跳线 SD、上电——静默约 3 秒(FSBL)后 U-Boot 横幅,经 extlinux 进内核,到 <strong>z7nano login:</strong> 约 30 秒;</li>
+    <li>root/root 登录,end0 配静态 IP(配置文件已内置;若插进有 DHCP 服务器的网络则会自动获取),<code>ssh root@192.168.1.10</code> 收工。</li>
+  </ol>
+  <p>六步之外的一切——BOOT.BIN 的字节布局、JTAG 的 PC 速查表、17 个坑——都是为"第五步没有出现登录提示"的那天准备的。这套东西真正的价值是<strong>方法论</strong>:换一块板、换一颗 SoC,跳线、启动链、设备树、JTAG 这套分析框架照用,变的只是参数。</p>
+  <p>剩下的路在 8.1 的路线图里。挑一个方向,继续折腾;折腾出来的新坑,欢迎按本手册的格式记录下去——"症状、定位、修复",这六个字就是嵌入式排障的全部家当。</p>
+
+  <h3>8.8 致谢与许可</h3>
+  <p>这本手册能存在,是因为站在一排巨人的肩膀上:感谢 AMD/Xilinx 开源了 embeddedsw 与详尽的引导文档,感谢 U-Boot 与 Linux 主线社区的持续维护,感谢 Debian 与 debootstrap 让"从零造一个 rootfs"变成三条命令,感谢 OpenOCD 让 JTAG 调试摆脱了专有工具;也感谢 MicroPhase 的板卡与随附资料——以及那个在深夜里对着全静默串口没有放弃的人。</p>
+  <div class="box box-win">
+    <div class="box-title">许可声明(轻松版)</div>
+    <p>本手册全文以<strong>知识共享(Creative Commons)</strong>方式发布:随便学、随便改、随便拿去教人。转载时能带个出处就更好了——毕竟这 17 个坑,每一个都是拿真机、真时间和真头发换来的。如果它帮你救活了一块板子,那就是它最大的使命。</p>
+  </div>
+
+  <div class="box box-win">
+    <div class="box-title">本章小结</div>
+    <ul>
+      <li>六个进阶方向各有去处:MAC 钉死 / JTAG 启动 / PYNQ 是入门甜点,响亮 FSBL / QSPI 是中等功课,PL 开垦是进阶大餐(需 Vivado,约 15GB);</li>
+      <li><code>code/</code> 九件套全部实战验证过,索引表标注了每个文件的关键行——拿去就用,但先改路径类参数;</li>
+      <li>追溯线索:厂商资料包里藏着 zynq_fsbl.elf / hdf / ps7_init.tcl,复用现成物料远比从零生成省事;</li>
+      <li>附录 C 收拢了全册的关键数字:30 秒 / 55°C / 0x1700 / 0x19740 / BOOT_MODE=5……排障时先翻它;</li>
+      <li>全册三条阅读线:跟做线、急救线、查询线——不同阶段翻同一本手册,姿势不同;</li>
+      <li>知识共享许可:拿去用,别客气。</li>
+    </ul>
+  </div>
+
+  <div class="pager">
+    <a href="ch7-pitfalls.html">← 上一章:踩坑大全</a>
+    <span></span>
+  </div>
+</main>
+</body>
+</html>

@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 3 章 · 工具链与开源替代 — Zynq Z7-Nano 主线 Linux 实战手册</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand">
+    <span class="chip">ZYNQ · MAINLINE</span>
+    <h1>Z7-Nano 主线 Linux</h1>
+    <p>从开箱到自主启动的完整实战</p>
+  </div>
+  <nav>
+    <a href="index.html"><span class="num">00</span>封面 · 如何使用本手册</a>
+    <a href="ch1-board.html"><span class="num">01</span>硬件档案与开箱</a>
+    <a href="ch2-bootchain.html"><span class="num">02</span>启动链与 BOOT.BIN 格式</a>
+    <a href="ch3-toolchain.html" class="active"><span class="num">03</span>工具链与开源替代</a>
+    <a href="ch4-build.html"><span class="num">04</span>构建三件套</a>
+    <a href="ch5-sdcard.html"><span class="num">05</span>制卡与首次启动</a>
+    <a href="ch6-debug.html"><span class="num">06</span>JTAG 调试方法论</a>
+    <a href="ch7-pitfalls.html"><span class="num">07</span>踩坑大全</a>
+    <a href="ch8-roadmap.html"><span class="num">08</span>路线图与附录</a>
+  </nav>
+  <footer>硬件:MicroPhase Z7-Nano R20 · XC7Z020<br>软件:主线 U-Boot · Linux 6.18 · Debian 13<br>知识共享,踩坑有痕</footer>
+</aside>
+<main class="main">
+  <div class="chapter-tag">CHAPTER 03</div>
+  <h2 class="title">工具链与开源替代</h2>
+  <p class="subtitle">一行 apt 装齐全部工具,顺手把"玩 Xilinx 必先装 Vivado"的执念拆掉。</p>
+
+  <div class="box box-step">
+    <div class="box-title">本章导读</div>
+    <p>上一章讲清了"启动链要什么",本章解决"我们用什么造它"。三块内容:</p>
+    <ol>
+      <li><strong>一行 apt</strong>:17 个包装齐交叉编译、内核构建、rootfs 自举、JTAG、串口五类需求(3.1);</li>
+      <li><strong>Vivado 摆脱表</strong>:逐环节审讯"这个步骤真的需要 Vivado 吗",结论是纯 PS 移植可以 100% 不装(3.2);</li>
+      <li><strong>mkbootimage 的教训</strong>:一个流行的开源工具如何坑了我们,以及从中提炼的"三重验证"方法论(3.3);</li>
+      <li><strong>工具速查表</strong>:全手册的"扳手墙"(3.4)。</li>
+    </ol>
+    <p>读完的检验标准:合上页面,你能对每个包说出"谁在用它",并对"要不要装 Vivado"给出有依据的答案。本章操作全程不需要板子在场。</p>
+  </div>
+
+  <h3>3.1 一行 apt,整个工具箱到位</h3>
+  <p>本项目的全部构建都在一台干净的 Ubuntu 24.04 上完成,没有一个字节来自 Xilinx 的安装包。</p>
+  <p>为什么坚持全用 apt:版本由发行版统一锁定、装完即用、五年内随 LTS 一起维护——对"追求可复现"的移植项目,这比到处下载工具包省心得多。占用也不过 Vivado 的零头。</p>
+  <p>顺带一提,我们的工作机是 24 核 62GB 的台式机,-j24 全速编译很爽;机器老一些完全没关系,只是慢些——构建不挑机器,挑的是依赖装没装齐。以下操作全程不需要板子在场,可以先在任意一台 Ubuntu 上把环境备好。</p>
+  <p>第一步,把工具链和依赖一次装齐(一行命令,回头续行即用;一口气装齐比缺啥补啥愉快):</p>
+  <pre><code><span class="k">sudo apt install</span> gcc-arm-linux-gnueabihf device-tree-compiler bison flex bc \
+  libssl-dev libgnutls28-dev swig python3-dev libncurses-dev u-boot-tools \
+  debootstrap qemu-user-static libelf-dev p7zip-full openocd python3-serial</code></pre>
+  <p>装完顺手自检,四个代表性命令都能出版本号就说明到位:</p>
+  <pre><code>arm-linux-gnueabihf-gcc --version   <span class="c"># 交叉编译器(Ubuntu 24.04 里是 GCC 13.3)</span>
+dtc --version                      <span class="c"># 设备树编译器</span>
+openocd --version                  <span class="c"># JTAG 服务器(第 6 章主角)</span>
+python3 -c 'import serial; print(serial.__version__)'   <span class="c"># pyserial</span></code></pre>
+  <p>都出版本号就继续;哪个报 command not found,回去对照那行 apt 查漏补缺。</p>
+  <p>另外两个值得认识的存在感:qemu-user-static 装好后 binfmt 自动注册,armhf 的可执行文件在 x86 主机上可以<strong>直接 ./ 运行</strong>;p7zip-full 提供 7z 命令,厂商资料包全靠它开箱。</p>
+  <p>下面那个 hello 冒烟测试,顺带就把 binfmt 的注册情况也验了。小提醒:hello.c 记得 <code>#include &lt;stdio.h&gt;</code>,否则编译器的 implicit-declaration 警告会吓你一跳。</p>
+
+  <h4>逐包说明:谁在用它,用它干什么</h4>
+  <p>装的时候不觉得,出问题回查的时候这张表很省事。按用途分四组:</p>
+
+  <p><strong>第一组:交叉编译与产物加工。</strong>这一组的名字你会天天敲:</p>
+  <table>
+    <tr><th>包</th><th>用途</th></tr>
+    <tr><td>gcc-arm-linux-gnueabihf</td><td>交叉工具链本体:<code>arm-linux-gnueabihf-gcc / -ld / -objdump / -nm …</code>,内核、U-Boot、模块全靠它(gnueabihf = GNU EABI + 硬浮点 ABI)</td></tr>
+    <tr><td>device-tree-compiler</td><td><code>dtc</code>:设备树 .dts → .dtb 的编译与反编译;改完 zynq-z7-nano.dts 先用它验语法</td></tr>
+    <tr><td>u-boot-tools</td><td><code>mkimage / dumpimage</code>:制作脚本镜像等(做 boot.scr 时用;走 extlinux 路线则几乎用不到)</td></tr>
+  </table>
+  <p>这一组的产物都是"要上板的东西"。</p>
+
+  <p><strong>第二组:内核与 U-Boot 的构建依赖。</strong>这些包本身不产出任何东西,但缺一个构建就会在中途莫名其妙地失败——swig、libelf-dev、bc 大概是其中最没存在感的三位:</p>
+  <table>
+    <tr><th>包</th><th>用途</th></tr>
+    <tr><td>bison</td><td>语法分析器生成器,内核与 U-Boot 构建的硬依赖</td></tr>
+    <tr><td>flex</td><td>词法分析器生成器,同上</td></tr>
+    <tr><td>bc</td><td>任意精度计算器,内核构建脚本内部调用</td></tr>
+    <tr><td>libssl-dev</td><td>OpenSSL 开发头文件:内核模块签名 / 证书工具需要</td></tr>
+    <tr><td>libgnutls28-dev</td><td>GnuTLS 开发头文件:主线 U-Boot 的主机侧工具链接它</td></tr>
+    <tr><td>swig</td><td>胶水代码生成器,内核自带脚本工具的构建需要</td></tr>
+    <tr><td>python3-dev</td><td>Python 头文件,编译内核自带的 Python 工具</td></tr>
+    <tr><td>libncurses-dev</td><td>终端 UI 库:make menuconfig 的界面就是它画的</td></tr>
+    <tr><td>libelf-dev</td><td>libelf 头文件:内核 objtool / BTF 相关构建需要</td></tr>
+  </table>
+  <p>这一组只为构建过程服务,产物一个都不会出现在目标机上。它们存在感最低(bc 大概是其中的隐身冠军),但缺一个,构建就会在中途某个意想不到的步骤报错。</p>
+
+  <p><strong>第三组:Debian rootfs 自举。</strong></p>
+  <table>
+    <tr><th>包</th><th>用途</th></tr>
+    <tr><td>debootstrap</td><td>Debian 官方的 rootfs 自举工具,<code>--foreign</code> 半程模式把基础系统拉下来(第 4 章)</td></tr>
+    <tr><td>qemu-user-static</td><td>用户态模拟器(静态链接版)+ binfmt:在 x86 主机上 chroot 进 armhf rootfs 跑第二阶段,"没有这块板子也能把 Debian 装完"</td></tr>
+  </table>
+  <p>这一组的意义:rootfs 的整个制作过程都不需要板子在场——第 4 章的 debootstrap 双阶段流程全靠它们。</p>
+
+  <p><strong>第四组:硬件侧工具。</strong></p>
+  <table>
+    <tr><th>包</th><th>用途</th></tr>
+    <tr><td>openocd</td><td>开源 JTAG 服务器,直接驱动板载 FT232H(第 6 章的主角,深夜排雷全靠它)</td></tr>
+    <tr><td>python3-serial</td><td>pyserial:我们串口工具 uart.py(listen 自动重连、耐心等设备)的地基</td></tr>
+    <tr><td>p7zip-full</td><td>7z 解包:厂商资料包是 7z 格式,zynq_fsbl.elf 和 hdf 都藏在里面</td></tr>
+  </table>
+  <p>这一组是人与板子之间的全部接口:串口看话、JTAG 把脉、解包取料。</p>
+  <p>四组介绍完,再回头看开头那行 apt,每个名字都应该有了面孔。</p>
+
+  <p>工具链冒烟测试:写一个 hello.c,交叉编译成静态程序,再用 qemu 在主机上直接跑——一次验证"交叉编译器 + 用户态模拟器"两个环节:</p>
+  <pre><code><span class="c"># hello.c 只需要一行:printf("Hello, Z7-Nano!\n");</span>
+arm-linux-gnueabihf-gcc -static hello.c -o hello   <span class="c"># 交叉编译(静态链接,不依赖目标机库)</span>
+qemu-arm-static ./hello                           <span class="c"># x86 主机上直接运行 armhf 程序</span>
+file hello                                        <span class="c"># 确认:ARM, EABI5, statically linked</span></code></pre>
+  <p>三行都如预期,3.1 节通关。到这里,主机侧准备完毕——可以用一句话向同事交代:"一台 Ubuntu,17 个包,零外部下载。"</p>
+
+  <div class="box box-know">
+    <div class="box-title">知识 · 主机侧 vs 目标侧</div>
+    <p>这对词将贯穿全书,先钉住:</p>
+    <ul>
+      <li><strong>主机侧(host)</strong>:在你的 x86 Ubuntu 上运行的 gcc、dtc、debootstrap、OpenOCD——它们生产、检查、烧写板子的东西,自己从不上板;</li>
+      <li><strong>目标侧(target)</strong>:zImage、u-boot-dtb.bin、BOOT.BIN、rootfs、内核模块——在板子上跑的一切;</li>
+      <li><strong>交叉编译</strong> = 主机侧工具生产目标侧产物;上面那个 hello 实验,一行命令同时摸到了两侧。</li>
+    </ul>
+  </div>
+
+  <div class="box box-know">
+    <div class="box-title">追问 · 为什么不是 64 位 aarch64 工具链?</div>
+    <p>Zynq-7000 的 PS 是双核 Cortex-A9,32 位 ARMv7-A——对应 arm-linux-gnueabihf(armhf)。</p>
+    <p>aarch64 是给后续 UltraScale+ MPSoC 一代的;工具链选错架构,产物根本无法在目标机上执行——file 命令能第一时间替你把关。</p>
+  </div>
+
+  <div class="box box-warn">
+    <div class="box-title">警告 · 环境小贴士</div>
+    <p>本手册全程在 Ubuntu 24.04 实测;其他发行版包名相近,原则上可行但未验证。</p>
+    <p>不建议 WSL:串口(/dev/ttyUSB)与 JTAG 适配器的直通都要额外转发,排雷时多一层变量,得不偿失。</p>
+  </div>
+
+  <div class="box box-know">
+    <div class="box-title">知识 · 读懂 arm-linux-gnueabihf- 这个前缀</div>
+    <p>交叉工具链的每个工具都戴着同一顶帽子:<code>arm-linux-gnueabihf-gcc</code>、<code>arm-linux-gnueabihf-nm</code>……这个三元组读作"架构-内核-ABI":目标是 ARM、跑 Linux、GNU EABI 且硬浮点(hf,hard-float)。</p>
+    <p>第 4 章构建命令里的 <code>CROSS_COMPILE=arm-linux-gnueabihf-</code>,作用就是告诉 Makefile"给所有宿主机工具名前面加这串前缀再去调用"。Cortex-A9 有硬件浮点单元,选 hf 三元组是对的。</p>
+    <p><strong>那为什么 FSBL 用的是另一把扳手 arm-none-eabi?</strong>none 意为"无操作系统":FSBL 是裸机程序,没有 Linux 可依赖;而内核和 U-Boot 是跑在(或自举出)Linux 环境的程序。两套三元组,两种世界,别拿错。</p>
+    <p>好在它们完全可以在一台机器上共存,互不干扰。顺带认识第 6 章会用到的两个同族工具:<code>arm-linux-gnueabihf-nm</code>(列符号表,按地址排序可定位 PC 落在哪个函数)和 <code>arm-linux-gnueabihf-objdump</code>(反汇编)。</p>
+  </div>
+
+  <div class="box box-know">
+    <div class="box-title">知识 · GCC 13.3 一点都不老</div>
+    <p><strong>版本号不是年份。</strong>GCC 的版本读作"主版本.维护版":13.3 是"13 系第 3 个维护发布",不是"2013 年的编译器"。上游大约每年发一个大版本,大版本之内只做缺陷修复。</p>
+    <p>想尝鲜 GCC 14/15 当然可以自己装,但对本项目毫无必要——交叉编译的世界里,"够新"即可,"最新"没有奖励。</p>
+    <p><strong>发行版要的是稳。</strong>Ubuntu 24.04 LTS 发布时锁定当时上游稳定的 GCC 13,此后只在 13 系内吸收修复(.3 就是这么来的),不为尝鲜跨大版本——LTS 承诺的是五年可复现的构建环境,这对交叉编译是优点,不是缺点。</p>
+    <p><strong>内核的下限很低。</strong>主线内核对 GCC 的最低要求多年停留在 5.x 一线,U-Boot 同样宽松;13.3 比最低门槛高出八个主版本。</p>
+    <p>交叉编译对编译器"够不够新"敏感,对"是不是最新"毫不敏感——用更新的编译器不会得到更快的 ARM 代码,只会得到更多的意外。</p>
+    <p>真正要警惕的是反过来的情况:编译器太老编不动新内核,或者宿主机缺 libssl-dev 这类"半老"依赖——这也是上面那行 apt 把构建依赖一次装齐的原因。</p>
+  </div>
+
+  <h3>3.2 Vivado 摆脱表:逐环节审讯</h3>
+  <p>新手最大的心理障碍往往是:"玩 Xilinx 的板子,是不是得先装几十 GB 的 Vivado?"</p>
+  <p>把主线 Linux 移植拆成六个环节,逐个审讯"这一步真的需要它吗"。先看总表(❌ = 完全不需要,⚠️ = 生成需要但可绕过,✅ = 真需要):</p>
+  <table>
+    <tr><th>环节</th><th>需要 Vivado?</th><th>开源替代</th></tr>
+    <tr><td>编译 U-Boot / 内核 / Debian</td><td>❌</td><td>apt 交叉工具链</td></tr>
+    <tr><td>BOOT.BIN 打包</td><td>❌</td><td>自写 make-bootbin.py(本仓库)/ antmicro mkbootimage(慎用)</td></tr>
+    <tr><td>FSBL</td><td>⚠️ 生成需要(xsdk / xsct)</td><td>直接复用厂商现成 zynq_fsbl.elf;要改就用 embeddedsw 源码 + arm-none-eabi 手工编译</td></tr>
+    <tr><td>PL 侧 FPGA 开发(逻辑篇 / HDMI 等)</td><td>✅ 必须</td><td>无完整替代(Yosys / nextpnr 不支持 Zynq-7000 SoC 流程)</td></tr>
+    <tr><td>JTAG 调试</td><td>❌</td><td>OpenOCD(本仓库配置)</td></tr>
+    <tr><td>ps7_init / 硬件描述(.hdf)</td><td>⚠️ 生成需要</td><td>厂商 BSP 里通常有现成的</td></tr>
+  </table>
+  <p>六行里只有一个 ✅。两个 ⚠️ 行的共同点也值得先点破:需要的是"生成能力",而生成物通常能从厂商资料里直接拿到——需要 ≠ 必须自己拥有工具。</p>
+  <p>下面逐行展开,每个环节讲清"为什么需要 / 为什么不需要 / 替代方案"。</p>
+  <p>审讯的方法是给每个环节连问三句:这步的输入输出是什么?有没有非 Xilinx 的工具能做?用它 / 不用它,各自的风险是什么?——这套问法你以后评估任何"官方工具依赖"都能复用。</p>
+  <p>反过来想:假如把"装 Vivado"当默认选项,本项目的门槛会变成注册账号、下载几十 GB、先学一套 IDE,而纯 PS 部分的收益是零。把"大家都说要"拆成"逐环节证明要不要",门槛就塌了。</p>
+
+  <h4>环节一:编译三件套 —— 不需要,一秒都不需要</h4>
+  <ul>
+    <li><strong>为什么不需要</strong>:U-Boot、内核、Debian 都是普通开源项目,前两者用 apt 的交叉工具链编译(第 4 章),rootfs 用 debootstrap + qemu 自举(第 4 章);</li>
+    <li><strong>Vivado 在这里干什么</strong>:什么都不干——它对这三个构建零参与、零加速;</li>
+    <li><strong>替代方案</strong>:3.1 节那行 apt,就是全部。</li>
+  </ul>
+  <p>这一环节是六行里最"送分"的,也是新手最容易被吓住的一行——吓住人的不是事实,是"Xilinx 板子"这五个字的光环。</p>
+
+  <h4>环节二:BOOT.BIN 打包 —— 不需要,bootgen 的活我们自己干</h4>
+  <ul>
+    <li><strong>为什么不需要</strong>:官方工具 bootgen 做的事,本质是"拼头部 + 拷数据"——第 2 章已把格式逐字节解剖,再无黑盒;</li>
+    <li><strong>为什么自己写</strong>:bootgen 随 Xilinx 工具链发布,用它的前提还是装 Vivado;而格式本身简单到 80 行 Python 足够;</li>
+    <li><strong>替代方案</strong>:make-bootbin.py(3.3 节);第三方的 antmicro mkbootimage 慎用——教训值得单独一节。</li>
+  </ul>
+  <p>顺带省下的还有学习成本:bootgen 的 .bif 描述语法、配套工具的用法,都是 Xilinx 生态内的知识;make-bootbin.py 是任何人一下午能读完的 Python。</p>
+  <p>这一环节也是"摆脱工具依赖"的模板三步:格式吃透 → 最小替换 → 自检兜底。</p>
+
+  <div class="box box-know">
+    <div class="box-title">背景 · .bif 是什么</div>
+    <p>bootgen 的输入是一份 .bif 文本,声明这个 BOOT.BIN 由哪些镜像、哪些分区组成。我们存档的 failed-bootgen-mkbootimage.bif 就是当时喂给 mkbootimage 的同类描述——失败案例连输入一起留档,复盘才能完整复现。</p>
+    <p>对照第 2 章的格式图读 .bif,你会发现它不过是把"分区头字段"写成了人类可读的声明——两套表述,一个格式。</p>
+  </div>
+
+  <h4>环节三:FSBL —— 半需要:生成要 Xilinx 工具,但你可以不生成</h4>
+  <p>从 hdf 生成 zynq_fsbl.elf 的工具(xsdk / xsct 家族)确实属于 Xilinx 软件栈。但请注意"生成"和"拥有"的区别:</p>
+  <ul>
+    <li><strong>最省事</strong>:直接复用厂商现成的 zynq_fsbl.elf——它对这块板是"已知好"的(本项目就是这么干的);</li>
+    <li><strong>想改它</strong>(比如打开 FSBL_DEBUG_INFO 让启动开口说话):FSBL 源码开源(embeddedsw 的 lib/sw_apps/zynq_fsbl/,我们用 xilinx-v2018.3 tag),用 arm-none-eabi 裸机工具链手工编译即可,这是第 8 章路线图第一项;</li>
+    <li><strong>自担的风险去哪了</strong>:自编 FSBL 的一切板级参数来自厂商 hdf,而厂商 ELF 本身也出自同一套参数——殊途同归,复用现成的是风险更小的那条路。</li>
+  </ul>
+  <p>这条路线的实际成本低到感人:从厂商 7z 资料包里拷出一个文件,放进模板,就完事了。</p>
+
+  <h4>环节四:PL 侧 FPGA 开发 —— 真正的硬需求</h4>
+  <ul>
+    <li><strong>为什么需要</strong>:要用可编程逻辑(厂商教程的逻辑篇、HDMI 实验、自定义加速器),就得做综合、布局布线、比特流生成这一整套 FPGA 流程;</li>
+    <li><strong>为什么没有替代</strong>:开源工具(Yosys / nextpnr)不支持 Zynq-7000 SoC 的完整流程,拼不出一条能用的链;</li>
+    <li><strong>缓解</strong>:免费版 Vivado ML Standard 就完整支持 XC7Z020,不用买授权。</li>
+  </ul>
+  <p>结论前置:你的目标是学 Linux,这个需求可以推迟到真想开垦 PL 的那一天再满足。XC7Z020 的 PL 是 Artix-7 级(第 1 章),值不值得装,取决于你想拿这片逻辑做什么。</p>
+
+  <h4>环节五:JTAG 调试 —— 不需要,OpenOCD 全包</h4>
+  <ul>
+    <li><strong>为什么不需要</strong>:板载的 FT232H 是标准 FTDI 芯片,OpenOCD 直接驱动,读寄存器、看 PC、灌镜像、断点全流程都不碰 Xilinx 软件;</li>
+    <li><strong>替代方案</strong>:OpenOCD + 本仓库的 openocd-z7nano.cfg(第 6 章逐条讲);</li>
+    <li><strong>额外好处</strong>:命令行脚本化,排雷动作可以整段复用,GUI 工具反而做不到。</li>
+  </ul>
+  <p>留一条后路在档案里:第 8 章路线图提到,真装了 Vivado 之后,它的 hw manager / xsct 随时能当第二救援通道——但那是锦上添花,不是必需品。</p>
+  <p>版本也不用纠结:apt 的 OpenOCD 足以驱动 FT232H + Zynq-7000,无需源码自编。</p>
+
+  <h4>环节六:ps7_init / hdf —— 生成需要,但通常白送</h4>
+  <ul>
+    <li><strong>为什么生成需要</strong>:hdf 由 Vivado 硬件工程产出,是板级参数(时钟、DDR、MIO)的权威来源;</li>
+    <li><strong>为什么不用担心</strong>:开发板厂商的资料包里几乎必有现成的——Z7-Nano 的 7z 包里就有 hdf 与 ps7_init.tcl;</li>
+    <li><strong>拿到它能干什么</strong>:改 FSBL、核对时钟配置,都有了依据。</li>
+  </ul>
+  <p>一句话:这一行的正确姿势是"从厂商资料里认领,而不是从 Vivado 里重造"。</p>
+
+  <div class="box box-win">
+    <div class="box-title">结论 · 纯 PS 移植 = 0 份 Vivado</div>
+    <p>六个环节审讯完毕:<strong>纯 PS 侧移植 Linux,可以 100% 不装 Vivado。</strong>本项目从开箱到全自主启动(含深夜 JTAG 排雷),全程一台只装了 apt 工具链的 Ubuntu 24.04。</p>
+    <p>制卡烧录更不涉及——sfdisk、mkfs、dd 都是系统自带工具。Vivado 的入场券,只在开垦 PL 时才需要买——那也正是它不可替代的地方。</p>
+  </div>
+
+  <h4>真到要装的那天:给未来的自己留几句</h4>
+  <p>等第 8 章的"PL 开垦"排上日程,装 Vivado 时记住三件事:</p>
+  <ul>
+    <li>选免费的 Vivado ML Standard,对 XC7Z020 功能完整;</li>
+    <li>安装界面只勾 Vivado 本体 + Zynq-7000 器件族,下载量可控制在约 15GB(全勾会大得多);</li>
+    <li>它只是你工具箱里又一件工具——本手册前七章的所有能力,依然一行 apt 就能复原;</li>
+    <li>两套环境互不冲突:Vivado 装在它自己的目录,apt 工具链照常工作。</li>
+  </ul>
+
+  <h3>3.3 Antmicro mkbootimage 的教训:工具产出必须三重验证</h3>
+  <p>这一节是全书少有的"失败专列"——讲透了它,你对"工具"这个词的理解会上一个台阶。</p>
+  <p>社区最常被推荐的开源 BOOT.BIN 打包器,是 Antmicro 的 zynq-mkbootimage(github.com/antmicro/zynq-mkbootimage)。我们最初也用它——失败案例的输入文件 failed-bootgen-mkbootimage.bif 至今存档在仓库 code/ 目录,作为纪念碑。</p>
+  <p>它产出的镜像被 <strong>BootROM 直接拒收</strong>:JTAG 实测 PC 停在 ROM 错误循环 0xFFFFFF34(第 2 章数字卡片里那个数),两个核都出不来。</p>
+  <p>把那晚的遭遇浓缩成时间线,每行都是真实发生的事:</p>
+  <pre><code>满心欢喜:mkbootimage 打包 → 烧卡 → 上电
+症状:串口全静默
+JTAG 读 PC:两核都停在 0xFFFFFF34 → BootROM 就地拒绝,FSBL 根本没轮上
+定位:问题确定出在工具产出的镜像本身
+取舍:没有逐项定位 mkbootimage 的具体错误(救板优先,不写论文)
+决定:自写打包器 → make-bootbin.py → 一次成功
+教训落地:三重验证从此写进流程</code></pre>
+  <p>时间线里最值得咀嚼的是"取舍"那一行:排障也是工程决策——救板子优先于给第三方工具写诊断报告,把精力花在能落地的方案上。</p>
+  <p>被拒的具体原因没有逐一定位,但一个先天缺陷是明确的:mkbootimage 对 ELF 分区做"节区块编码"——把 0x040CDA41 这类地址描述结构混进分区数据(这个数字你在第 2 章"裸拷贝语义"一节见过)。</p>
+  <p>而第 2 章讲过,FSBL 对 PS 分区是<strong>裸拷贝</strong>:块编码假设加载器会解释这些结构,FSBL 不解释。</p>
+  <p><strong>即使骗过了 ROM,也过不了 FSBL 这一关。</strong>一个在别的加载器语义下工作正常的工具,换一个环境就可能是错的——"开源"与"正确"之间没有必然联系。</p>
+
+  <div class="box box-step">
+    <div class="box-title">方法论 · 工具产出的三重验证,缺一不可</div>
+    <ol>
+      <li><strong>已知好样本对照</strong>:拿厂商原厂 BOOT.BIN 当标尺,与工具产出逐段比对头部结构;</li>
+      <li><strong>解剖器验证</strong>:用 exbootimage -d(Antmicro 同仓库出的解剖器)把产出"开膛",逐字段核对(校验和、结束标记、数据偏移);</li>
+      <li><strong>真机 JTAG 验收</strong>:最终唯一真理——烧卡上电,PC 走到该到的位置才算通过(第 6 章 PC 速查表)。</li>
+    </ol>
+    <p>三道关卡,一道都不能省:第一道抓"结构不对",第二道抓"字段错误",第三道抓前两道都发现不了的语义问题。</p>
+    <p>为什么说真机是唯一真理:前两道关卡都还在"你理解的格式"里打转,只有真机能证明"芯片理解的格式"与你理解的一致。</p>
+    <p>顺便认亲:第 2 章 2.4 节的"解剖四步",就是第二道关卡的手动教学版——三重验证不是新发明,是那晚之后被正式命名的方法。</p>
+  </div>
+
+  <div class="box box-warn">
+    <div class="box-title">警告 · 别从一个坑跳进另一个坑</div>
+    <p>这个教训的正确提取方式是"给工具产出上三重验证",而不是"从此只用自写工具"。第三方开源工具依然值得用——前提是它产出你能验证的东西。</p>
+    <p>我们自写 make-bootbin.py,是因为 BOOT.BIN 格式小到可以完全掌控(80 行),且第 2 章已把它解剖到字节级;换一个庞大复杂的格式,自写反而是傲慢。</p>
+    <p>一句话:工具的可靠性不是属性,是结论——每个工具都要重新挣得你的信任。</p>
+  </div>
+
+  <div class="box box-know">
+    <div class="box-title">背景 · 为什么不用 PetaLinux / Yocto / Buildroot?</div>
+    <p>出厂系统正是 PetaLinux 2018.3 做的。它省心,但把内核、U-Boot、rootfs 的版本选择权整个交给了 Xilinx 的年度发布节奏——而"用上主线内核和官方 Debian 源"恰恰是本项目的目标,用 PetaLinux 等于南辕北辙。</p>
+    <p>Yocto / Buildroot 是强大的发行版构建系统,适合做产品;但它们的价值在"批量、可定制的整栈生产",学习曲线也重在系统本身。我们的目标是<strong>理解并掌控每一层</strong>——直接构建三件套,每层都可解释、可单独替换,这才是本手册的教学路线。</p>
+    <p>话说回来,PetaLinux 与本手册并非敌我:出厂系统就来自它,厂商 BSP 是重要的参考资料——只是我们不再用它做构建。</p>
+  </div>
+
+  <p>那为什么不用官方的 bootgen?因为它随 Xilinx 工具链发布——用它就得装 Vivado,3.2 节的审讯就白做了。而格式本身,第 2 章已经证明它简单到可以手写。</p>
+  <p>我们的回应是自写打包器 make-bootbin.py,策略是"最小替换":以厂商 BOOT.BIN 前 0x19740 字节为模板(ROM 头 + 镜像头 + FSBL 分区<strong>原封不动</strong>——这部分已知是好的,不碰),替换 p2 为我们的 u-boot 平铺二进制,重写 p2 分区头,写入结束标记。</p>
+  <p>关键常量每一个都在第 2 章出现过(注释引用脚本原文):</p>
+  <pre><code>P1_DATA_OFF   = 0x1700   <span class="c"># FSBL 数据固定起始偏移(bootgen 约定)</span>
+P1_END        = 0x19740  <span class="c"># 模板中 p2 数据起始(= p1 结尾 0x19708 向上对齐到 0x40 边界)</span>
+PART_HDR_BASE = 0xC80    <span class="c"># 分区头表起始</span>
+IMG_HDR2      = 0x940    <span class="c"># 镜像头 #2(u-boot)</span>
+IHT_COUNT     = 0x8C4    <span class="c"># 镜像头表 - 镜像计数</span></code></pre>
+  <p>用法(第 4 章编出 u-boot-dtb.bin 之后):</p>
+  <pre><code>python3 code/make-bootbin.py --template vendor.BIN --uboot u-boot-dtb.bin \
+    --text-base 0x04000000 -o BOOT.BIN</code></pre>
+  <p>--text-base 必须与 U-Boot 的链接地址(TEXT_BASE)一致,默认 0x04000000 正是主线 Zynq 配置的取值,与第 2 章分区头的 w3/w4 相互印证。</p>
+  <p>成功时脚本会打印一行回执:输出文件名、总字节数、p2 的大小与基址——像一场交接仪式的签收单。</p>
+  <p>脚本自带 assert 自检:校验和或结束标记写错,当场崩溃报错,绝不静默地产出坏镜像——这正是把三重验证中"解剖器验证"一环内化进了工具。约 80 行代码,换来对格式的完全掌控,值。</p>
+  <p>顺手做个破坏性实验,体会"自检"的分量:把脚本里 XOR 那行改成减法,跑一遍——assert 当场红脸。信任工具的前提,是工具敢跟你说实话。</p>
+  <p>更深一层的方法论收获:<strong>格式类工具(打包器、镜像生成器)的错误输出往往不会"显眼地失败"</strong>——它生成一个结构合法却语义错误的文件,只有真机能揭穿。</p>
+  <p>所以排查硬件链路时,在怀疑板子之前,先怀疑工具,再用三重验证把工具排除掉。这也是失败案例 failed-bootgen-mkbootimage.bif 留档的意义:坑是资产,复盘才有复利。</p>
+  <p>三重验证的思路还能横向复用:验证设备树,可以反编译回来做 diff;验证 SD 卡内容,可以对分区做校验和——"产出必须能自证正确"是个可以到处搬的原则。</p>
+
+  <div class="box box-win">
+    <div class="box-title">本章小结</div>
+    <ul>
+      <li>一行 apt 装齐 17 个包,覆盖交叉编译、内核构建、rootfs 自举、JTAG、串口五大类需求;装完跑三行冒烟测试即可确认到位;</li>
+      <li>GCC 13.3 不老:版本号与年份无关,LTS 求稳,内核 / U-Boot 对编译器版本要求宽松;</li>
+      <li>两把扳手别拿错:arm-linux-gnueabihf-(Linux 世界,内核 / U-Boot)与 arm-none-eabi(裸机世界,FSBL);主机侧工具生产目标侧产物,这对概念贯穿全书;</li>
+      <li>六个环节逐一审讯后:只有 PL 开发真正绑死 Vivado,纯 PS 移植 100% 可免,免费版 + 只勾 Zynq-7000 器件族可把未来的安装控制在约 15GB;</li>
+      <li>mkbootimage 之坑的方法论遗产:工具产出必须过"已知好样本 + 解剖器 + 真机"三重验证;</li>
+      <li>约 80 行的 make-bootbin.py 替代 bootgen——格式细节回看第 2 章,实战调用见第 4、5 章。</li>
+    </ul>
+    <p>本章几个数:17 个包、GCC 13.3、80 行、约 15GB、3 道验证。3.4 的速查表是本章的实体输出,建议打印。工具箱齐了,下一章正式开编三件套:U-Boot、内核 6.18、Debian 13。</p>
+  </div>
+
+  <h3>3.4 工具速查表:全手册的"扳手墙"</h3>
+  <p>把本手册会用到的全部工具集中挂墙,出处一栏标了初登场章节。排雷时翻这张表,比翻记忆快;随书仓库的 code/ 目录就是这张表的实体:</p>
+  <table>
+    <tr><th>工具</th><th>一句话用途</th><th>初登场</th></tr>
+    <tr><td>arm-linux-gnueabihf-gcc(及同族)</td><td>交叉编译内核 / U-Boot / 模块</td><td>本章 3.1</td></tr>
+    <tr><td>dtc</td><td>设备树 .dts 编译与验证</td><td>本章 3.1</td></tr>
+    <tr><td>mkimage / dumpimage</td><td>镜像制作(boot.scr 备用路线)</td><td>本章 3.1</td></tr>
+    <tr><td>debootstrap + qemu-arm-static</td><td>Debian rootfs 双阶段自举</td><td>本章 3.1 / 第 4 章</td></tr>
+    <tr><td>openocd + code/openocd-z7nano.cfg</td><td>JTAG:halt、reg pc、load_image 救援</td><td>第 6 章</td></tr>
+    <tr><td>7z</td><td>解厂商资料包(取出 FSBL ELF、hdf)</td><td>第 4/5 章</td></tr>
+    <tr><td>arm-linux-gnueabihf-nm / objdump / strings</td><td>符号定位、反汇编、验证 dtb 已嵌入 U-Boot</td><td>第 6 章 / 第 4 章</td></tr>
+    <tr><td>code/uart.py</td><td>串口监听,自动重连、耐心等设备</td><td>第 1 章</td></tr>
+    <tr><td>code/make-bootbin.py</td><td>BOOT.BIN 打包器,自带 assert 自检</td><td>本章 3.3 / 第 5 章</td></tr>
+    <tr><td>code/make-sd.sh</td><td>安全制卡(拒绝 NVMe、要求可移动介质)</td><td>第 5 章</td></tr>
+    <tr><td>code/zynq-z7-nano.dts(内核版 / U-Boot 版)</td><td>设备树,同源小改</td><td>第 4 章</td></tr>
+    <tr><td>code/extlinux.conf</td><td>启动描述文件,U-Boot 按它加载内核</td><td>第 2 章 / 第 5 章</td></tr>
+    <tr><td>code/10-eth.network</td><td>systemd-networkd 网络配置(静态 IP,可自行改 DHCP)</td><td>第 5 章</td></tr>
+    <tr><td>xxd / od</td><td>二进制开膛,验魔术字、看字节</td><td>第 2 章 2.4</td></tr>
+    <tr><td>file</td><td>确认交叉产物的架构与链接方式</td><td>本章 3.1</td></tr>
+    <tr><td>sfdisk / mkfs.vfat / mkfs.ext4</td><td>制卡三件套(make-sd.sh 内部调用)</td><td>第 5 章</td></tr>
+    <tr><td>md5sum / sha256sum</td><td>产物与镜像的校验和比对</td><td>本章 3.3</td></tr>
+  </table>
+  <p>值得打印贴墙:整张表里没有一件工具需要 Xilinx 账号、授权或几十 GB 下载——这就是 3.2 节结论的可操作形态。</p>
+  <p>工具会随章节陆续登场,但它们的所有权都在你手里——这是"主线移植"四个字的另一层含义。</p>
+
+  <div class="pager">
+    <a href="ch2-bootchain.html">← 上一章:启动链与 BOOT.BIN 格式</a>
+    <a href="ch4-build.html">下一章:构建三件套 →</a>
+  </div>
+</main>
+</body>
+</html>

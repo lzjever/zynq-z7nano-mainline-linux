@@ -3,7 +3,7 @@
 > 一天之内,把一块 2018 年出厂的 Zynq-7020 开发板,换成 2026 年的主线 U-Boot + Linux 6.18 + Debian 13——
 > 从零到全自主启动,踩过的每一个坑都变成了教材。
 
-[**📖 打开手册网站(site/index.html)**](site/index.html)
+[**📖 打开手册网站(GitHub Pages)**](https://lzjever.github.io/zynq-z7nano-mainline-linux/)
 
 ## 这是什么
 
@@ -14,7 +14,7 @@
 ## 仓库结构
 
 ```
-site/       手册网站(纯静态 HTML,零依赖,GitHub Pages 直接可托管)
+docs/       手册网站(GitHub Pages 托管,纯静态零依赖)
 code/       全部实战代码(逐字节验证过)
   ├─ make-bootbin.py        Zynq BOOT.BIN 打包器(按官方格式手写,含格式注释)
   ├─ make-sd.sh             SD 制卡脚本(带安全检查)
